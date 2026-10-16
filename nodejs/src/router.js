@@ -1,9 +1,8 @@
 import guazi from './spider/video/guazi.js';
-import yidong4k from './spider/video/yidong4k.js';
 import zhibo from './spider/video/zhibo.js';
 import jinpai from './spider/video/jinpai.js';
 import juzi from './spider/video/juzi.js';
-const spiders = [guazi, yidong4k, zhibo, jinpai, juzi];
+const spiders = [guazi, zhibo, jinpai, juzi];
 const spiderPrefix = '/spider'; // API 路由前缀
 
 /**
