@@ -1,0 +1,51 @@
+name: Build CatPawOpen Bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nodejs/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: ./nodejs
+        run: npm ci
+
+      - name: Check spiders health
+        working-directory: ./nodejs
+        run: node scripts/check-spiders.mjs
+
+      - name: Build bundle
+        working-directory: ./nodejs
+        run: npm run build:local
+
+      - name: Deploy to dist/
+        run: |
+          mkdir -p dist
+          cp nodejs/dist/index.js dist/index.js
+          cp nodejs/dist/index.js.md5 dist/index.js.md5
+          cp nodejs/dist/index.config.js dist/index.config.js
+          cp nodejs/dist/index.config.js.md5 dist/index.config.js.md5
+          ls -lh dist/
+
+      - name: Commit and push dist
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/
+          git diff --staged --quiet || git commit -m "build: update dist bundle [skip ci]"
+          git push
