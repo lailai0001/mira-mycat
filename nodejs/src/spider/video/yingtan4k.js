@@ -219,18 +219,18 @@ async function detail(inReq) {
 // /play：去除 %XX 編碼 -> 內置解析 / 直鏈判定 / 交客戶端解析
 async function play(inReq) {
     let videoId = toStr(inReq.body?.id);
-    // MiraPlayer 规范: 只用 parse 字段,不用 jx (XPTV/TVBox 才用 jx)
+    // 保留 jx 字段 (XPTV/TVBox 用) + parse 字段 (MiraPlayer 用),与原版 4K.js 一致
     // 不剥离 %XX 编码,保持 URL 完整
 
     const isPlainUrl = /^https?:\/\//.test(videoId);
     if (!isPlainUrl || (isPlainUrl && videoId.includes('lyyytv.cn'))) {
         const parsed = await ldmaxParse(videoId);
-        if (parsed) return { parse: 0, url: parsed.url, header: HEADERS };
+        if (parsed) return { jx: 0, parse: 0, url: parsed.url, header: HEADERS };
     }
-    // 直接可播的直链: parse 0 直接播放
-    if (checkPlayUrl(videoId)) return { parse: 0, url: videoId, header: HEADERS };
-    // 需要解析的网页 URL: parse 1 交给客户端解析 (对应 XPTV 的 jx:1)
-    return { parse: 1, url: videoId, header: HEADERS };
+    // 直接可播的直链: jx 0 / parse 0 直接播放
+    if (checkPlayUrl(videoId)) return { jx: 0, parse: 0, url: videoId, header: HEADERS };
+    // 需要解析的网页 URL: jx 1 / parse 1 交给客户端解析
+    return { jx: 1, parse: 1, url: videoId, header: HEADERS };
 }
 
 // /search：CMS 原生搜索介面
