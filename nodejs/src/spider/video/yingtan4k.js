@@ -1,45 +1,48 @@
-// 影探4K —— MiraPlayer spider（最大资源 zuidapi，4K 电影为主）
-// 后端: https://api.zuidapi.com/api.php/provide/vod/ （苹果CMS 标准 JSON 接口）
-// 2026-10-17 重写：原 cms.lyyytv.cn 存储全 404，改用最大资源，4K 分类实测 212 部
+// 影探4K —— MiraPlayer spider（红牛资源，CDN 对手机友好）
+// 后端: https://www.hongniuzy2.com/api.php/provide/vod/ （苹果CMS 标准 JSON 接口）
+// 2026-10-17 重写：zuidapi 的 CDN 连手机 IP 也拦，改用红牛（115k 视频，CDN 5/5 实测 200）
 import req from '../../util/req.js';
 
 const KEY = 'py_yingtan4k';
 const NAME = '影探4K';
 
-const API = 'https://api.zuidapi.com/api.php/provide/vod/';
+const API = 'https://www.hongniuzy2.com/api.php/provide/vod/';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1';
 const TIMEOUT = 20000;
 
-// 分类：4K 置顶，其余按热度排
+// 分类（只保留有内容的，2026-10-17 实测各分类视频数）
 const CLASSES = [
-  { type_id: '62', type_name: '4K电影' },
-  { type_id: '6', type_name: '动作片' },
-  { type_id: '7', type_name: '喜剧片' },
-  { type_id: '11', type_name: '剧情片' },
-  { type_id: '10', type_name: '恐怖片' },
-  { type_id: '12', type_name: '战争片' },
-  { type_id: '13', type_name: '国产剧' },
-  { type_id: '69', type_name: '现代都市' },
-  { type_id: '64', type_name: '女频恋爱' },
-  { type_id: '66', type_name: '古装仙侠' },
-  { type_id: '67', type_name: '年代穿越' },
-  { type_id: '14', type_name: '欧美剧' },
-  { type_id: '15', type_name: '韩剧' },
-  { type_id: '16', type_name: '日剧' },
-  { type_id: '17', type_name: '港剧' },
-  { type_id: '18', type_name: '台剧' },
-  { type_id: '19', type_name: '泰剧' },
-  { type_id: '23', type_name: '海外剧' },
-  { type_id: '29', type_name: '国产动漫' },
-  { type_id: '30', type_name: '日韩动漫' },
-  { type_id: '31', type_name: '欧美动漫' },
-  { type_id: '39', type_name: '动画片' },
-  { type_id: '25', type_name: '大陆综艺' },
-  { type_id: '26', type_name: '日韩综艺' },
-  { type_id: '27', type_name: '港台综艺' },
-  { type_id: '28', type_name: '欧美综艺' },
-  { type_id: '49', type_name: '篮球' },
-  { type_id: '50', type_name: '足球' },
+  { type_id: '10', type_name: '剧情片' },
+  { type_id: '44', type_name: '现代都市' },
+  { type_id: '12', type_name: '国产剧' },
+  { type_id: '46', type_name: '言情总裁' },
+  { type_id: '6', type_name: '喜剧片' },
+  { type_id: '43', type_name: '古装仙侠' },
+  { type_id: '5', type_name: '动作片' },
+  { type_id: '32', type_name: '足球' },
+  { type_id: '48', type_name: '反转爽剧' },
+  { type_id: '15', type_name: '欧美剧' },
+  { type_id: '9', type_name: '恐怖片' },
+  { type_id: '33', type_name: '篮球' },
+  { type_id: '36', type_name: '中国动漫' },
+  { type_id: '49', type_name: '脑洞悬疑' },
+  { type_id: '7', type_name: '爱情片' },
+  { type_id: '37', type_name: '日本动漫' },
+  { type_id: '19', type_name: '纪录片' },
+  { type_id: '45', type_name: '穿越年代' },
+  { type_id: '20', type_name: '动漫电影' },
+  { type_id: '39', type_name: '大陆综艺' },
+  { type_id: '14', type_name: '日剧' },
+  { type_id: '8', type_name: '科幻片' },
+  { type_id: '18', type_name: '韩剧' },
+  { type_id: '17', type_name: '泰剧' },
+  { type_id: '11', type_name: '战争片' },
+  { type_id: '40', type_name: '日韩综艺' },
+  { type_id: '13', type_name: '港澳剧' },
+  { type_id: '38', type_name: '欧美动漫' },
+  { type_id: '16', type_name: '台湾剧' },
+  { type_id: '41', type_name: '港台综艺' },
+  { type_id: '42', type_name: '欧美综艺' },
 ];
 
 const toStr = (v) => (v == null ? '' : String(v)).trim();
@@ -86,8 +89,7 @@ async function home() {
   const classes = CLASSES.map((c) => ({ type_id: c.type_id, type_name: c.type_name }));
   let list = [];
   try {
-    // 首页推荐：4K 分类第一页
-    const d = await getJson(`${API}?ac=list&t=62&pg=1`);
+    const d = await getJson(`${API}?ac=list&t=10&pg=1`);
     if (d && Array.isArray(d.list)) list = d.list.map(toVod);
   } catch (e) { /* ignore */ }
   return { class: classes, filters: {}, list };
@@ -123,7 +125,7 @@ function parsePlay(vod) {
   }
   // 兜底：from 为空但 url 有内容
   if (!playFrom.length && toStr(vod.vod_play_url)) {
-    playFrom.push('zuidam3u8');
+    playFrom.push('hnm3u8');
     playUrl.push(toStr(vod.vod_play_url));
   }
   return { playFrom: playFrom.join('$$$'), playUrl: playUrl.join('$$$') };
@@ -157,7 +159,6 @@ async function detail(reqIn) {
 
 async function play(reqIn) {
   const body = reqIn?.body || {};
-  let flag = toStr(body.flag);
   let id = toStr(body.id);
   // id 可能是 "HD$https://...m3u8" 或纯 url
   let url = id;
@@ -168,7 +169,7 @@ async function play(reqIn) {
     return {
       parse: 0,
       url,
-      header: { 'User-Agent': UA, 'Referer': 'https://api.zuidapi.com/' },
+      header: { 'User-Agent': UA, 'Referer': 'https://www.hongniuzy2.com/' },
     };
   }
   return { parse: 0, url: '' };
