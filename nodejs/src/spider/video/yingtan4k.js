@@ -1,7 +1,7 @@
 // 影探4K —— catBridge 單檔 cat 源（後台「Cat 源」→ 上傳導入，熱重載）
 // 由 others/影探4K.py（tvbox python 源）移植。六介面契約見 docs/spider.md。
 // 沙箱內 import 會被改寫為 __CAT_JS_UTIL：'util/req.js' 走宿主 HTTP 客戶端，'crypto' 為 node:crypto。
-import req from 'util/req.js';
+import req from '../../util/req.js';
 import crypto from 'crypto';
 
 const HOST = 'http://cms.lyyytv.cn';
