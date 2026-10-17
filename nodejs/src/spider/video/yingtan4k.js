@@ -70,12 +70,13 @@ function ldmaxDecrypt(encrypted, depth = 0) {
 }
 
 // 對應 Python ldmax_parse：解密 -> 內置解析接口 -> 二次解密
+// 2026-10-17 修：解析接口已死，超時從 30s 縮到 8s，失敗快速返回不卡界面
 async function ldmaxParse(videoUrl) {
     const decrypted = ldmaxDecrypt(videoUrl);
     if (!decrypted || !/^https?:\/\//.test(decrypted)) return null;
     try {
         const parseUrl = PARSE_API + encodeURIComponent(decrypted);
-        const resp = (await req.get(parseUrl, { headers: PARSE_HEADERS, timeout: 30000 })).data;
+        const resp = (await req.get(parseUrl, { headers: PARSE_HEADERS, timeout: 8000 })).data;
         if (!resp || resp.code !== 200 || !resp.url) return null;
         const finalUrl = ldmaxDecrypt(resp.url);
         if (finalUrl && /^https?:\/\//.test(finalUrl)) {
@@ -216,15 +217,21 @@ async function detail(inReq) {
     }
 }
 
-// /play：去除 %XX 編碼 -> 內置解析 / 直鏈判定 / 交客戶端解析
+// /play：內置解析 / 直鏈判定 / 交客戶端解析
+// 2026-10-17 修：
+// 1. 不再剝離 %XX 編碼（會破壞中文文件名，如 %E6%80%80... 被刪光變 404）
+// 2. lyyytv.cn 偽直鏈解析失敗後不再當直鏈返回（已知播不了），改 jx:1 交客戶端試
+// 3. 解析接口超時已縮到 8s，不會卡界面 30 秒
 async function play(inReq) {
-    let videoId = toStr(inReq.body?.id);
-    videoId = videoId.replace(/%[0-9A-Fa-f]{2}/g, '');
+    const videoId = toStr(inReq.body?.id);
 
     const isPlainUrl = /^https?:\/\//.test(videoId);
-    if (!isPlainUrl || (isPlainUrl && videoId.includes('lyyytv.cn'))) {
+    const isLyytv = isPlainUrl && videoId.includes('lyyytv.cn');
+    if (!isPlainUrl || isLyytv) {
         const parsed = await ldmaxParse(videoId);
         if (parsed) return { jx: 0, parse: 0, url: parsed.url, header: HEADERS };
+        // 解析失敗：密文或 lyyytv.cn 偽鏈都交給客戶端解析/嗅探，不再假裝能直播
+        return { jx: 1, parse: 0, url: videoId, header: HEADERS };
     }
     if (checkPlayUrl(videoId)) return { jx: 0, parse: 0, url: videoId, header: HEADERS };
     return { jx: 1, parse: 0, url: videoId, header: HEADERS };
