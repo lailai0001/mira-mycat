@@ -38,16 +38,14 @@ function detailContent() {
     if (!url) {
         return '管理页尚未部署：请按交付说明部署 mycat-hub Worker，再把已部署域名告诉助理接线，接线后这里会显示地址与二维码';
     }
-    return url + '\n点第一行地址直接在 App 里打开管理页，不要点播放按钮；若点地址没反应，再用浏览器打开该地址。改动保存后，在播放器里刷新一次订阅即生效。';
+    return url + '\n点卡片直接在 App 里打开管理页；若没打开，再用浏览器打开该地址。改动保存后，在播放器里刷新一次订阅即生效。';
 }
 
 async function init() { return {}; }
 
-// 与原版 baseset 一致：首页唯一分类的 type_name 就是管理页地址本身，
-// App 会把这行地址渲染成带 > 的可点行，点它直接在 App 内打开管理页。
 async function home() {
     return {
-        class: [{ type_name: baseUrl() || '管理', type_id: 'setting' }],
+        class: [{ type_name: '管理', type_id: 'setting' }],
         filters: {},
         list: [card()],
     };
@@ -59,7 +57,21 @@ async function category(reqIn) {
     return { page, pagecount: 1, limit: 20, total: 1, list: [card()] };
 }
 
-async function detail() {
+// 点卡片进详情时，直接让 App 打开内置网页窗口（与其他猫源的配置源同款机制）：
+// 框架的 server.messageToDart({action:'openInternalWebview', opt:{url}}) 会把消息
+// 发给 App 内 Dart 侧的本地服务，由 App 打开内置 webview；与点地址行、点播放
+// 走的管线完全不同，远端地址也能打开。发消息失败时静默回落到普通详情
+// （二维码 + 地址文字），不影响详情页本身。
+async function detail(reqIn) {
+    const url = managerUrl();
+    if (url) {
+        try {
+            const srv = reqIn && reqIn.server;
+            if (srv && typeof srv.messageToDart === 'function') {
+                await srv.messageToDart({ action: 'openInternalWebview', opt: { url } }, reqIn);
+            }
+        } catch (e) { /* ignore: fallback to normal detail */ }
+    }
     return {
         list: [{
             vod_id: 'hub',
