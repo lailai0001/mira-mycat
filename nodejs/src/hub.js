@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------- 显示顺序
 // /config 的 sites 顺序只由这张表决定。表中没有的新 key 不会消失，
 // 兜底追加在末尾（防止新注册的站因漏填表而从配置里消失）。
-export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi', 'py_aikanbot', 'py_bt_two', 'py_duanju_bashi', 'py_duanju_daquan', 'py_hema_duanju', 'py_hongdou_duanju', 'py_huangguo_ai_local', 'py_jisu_zhuiju', 'py_rebo_fast', 'py_xin6v', 'py_duboku', 'py_duoduo_tv', 'py_hqvod4k', 'py_jianpian', 'py_kanju_ai', 'py_netflixgc', 'py_nivod_fast', 'py_wencaiyingshi', 'py_yueting', 'py_xingya_short', 'py_asmrba', 'py_xingmeng_asmr', 'py_ximalaya', 'py_yidong_4k', 'py_juzi_4k', 'py_tiantian_4k', 'py_chabeihu', 'py_fengye4k', 'py_gulu_4k', 'py_juxiafan_4k', 'py_douban_hot', 'py_dongman_bashi', 'py_dshixiong_tv', 'py_fenzhu', 'py_linglingqi', 'py_mengtaiqi', 'py_zhuijudaren', 'py_xiaoyouzi', 'py_duse91', 'py_duoju_local_node', 'py_netflix_cat', 'py_tencent_video', 'py_zhenpin_video', 'py_hudie_yingyuan', 'py_guazi_2k', 'py_duoduo_pan', 'py_muou_share', 'py_huajuan_pan', 'py_wanou_pan', 'py_pianku_pan', 'py_pomo_pan', 'py_shandian_tv', 'py_youtube_video', 'py_hub_center'];
+export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi', 'py_aikanbot', 'py_bt_two', 'py_duanju_bashi', 'py_duanju_daquan', 'py_hema_duanju', 'py_hongdou_duanju', 'py_jisu_zhuiju', 'py_rebo_fast', 'py_xin6v', 'py_duboku', 'py_duoduo_tv', 'py_hqvod4k', 'py_jianpian', 'py_kanju_ai', 'py_netflixgc', 'py_nivod_fast', 'py_wencaiyingshi', 'py_yueting', 'py_xingya_short', 'py_asmrba', 'py_ximalaya', 'py_yidong_4k', 'py_juzi_4k', 'py_tiantian_4k', 'py_chabeihu', 'py_fengye4k', 'py_gulu_4k', 'py_juxiafan_4k', 'py_douban_hot', 'py_dongman_bashi', 'py_dshixiong_tv', 'py_fenzhu', 'py_linglingqi', 'py_mengtaiqi', 'py_zhuijudaren', 'py_xiaoyouzi', 'py_duse91', 'py_duoju_local_node', 'py_netflix_cat', 'py_tencent_video', 'py_zhenpin_video', 'py_guazi_2k', 'py_duoduo_pan', 'py_muou_share', 'py_huajuan_pan', 'py_wanou_pan', 'py_pianku_pan', 'py_pomo_pan', 'py_shandian_tv', 'py_youtube_video', 'py_hub_center'];
 
 // ---------------------------------------------------------------- 开关源
 // 把源的 meta.key 加进来，该源就不再下发到 /config；删掉这一项就恢复。
@@ -122,7 +122,7 @@ export const PAN_SOURCES = [
 export const HUB_WORKER_BASE = 'https://mycat-hub.li768435813.workers.dev';
 
 // 成人源 key（仅此 3 个）：远端配置 hideAdult=true 时并入 disabled 下发过滤。
-export const ADULT_KEYS = ['py_huangguo_ai_local', 'py_duoju_local_node', 'py_hudie_yingyuan'];
+export const ADULT_KEYS = ['py_duoju_local_node'];
 
 /**
  * 读远端 Worker 配置（GET HUB_WORKER_BASE + '/api/config'）。
