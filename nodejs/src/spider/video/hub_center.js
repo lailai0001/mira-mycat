@@ -30,7 +30,7 @@ function detailContent() {
     if (!url) {
         return '管理页尚未部署：请按交付说明部署 mycat-hub Worker，再把已部署域名告诉助理接线，接线后这里会显示地址与二维码';
     }
-    return '管理页地址：' + url + '\n用法：用手机浏览器打开该地址（或扫描上方二维码）进入管理页，改动保存后，在播放器里刷新一次订阅即生效。';
+    return '管理页地址：' + url + '\n用法：点一下管理页地址直接打开（或扫描上方二维码）进入管理页；若点地址无反应，再用浏览器打开该地址。改动保存后，在播放器里刷新一次订阅即生效。';
 }
 
 async function init() { return {}; }
@@ -49,6 +49,8 @@ async function category(reqIn) {
     return { page, pagecount: 1, limit: 20, total: 1, list: [card()] };
 }
 
+// 与原版中枢一致：详情只有二维码与地址文字，不设播放入口。
+// 原版 baseset 的 play 直接返回空（parse:0, url:''），详情无 vod_play_from/vod_play_url。
 async function detail() {
     return {
         list: [{
@@ -56,16 +58,12 @@ async function detail() {
             vod_name: NAME,
             vod_pic: qrUrl(),
             vod_content: detailContent(),
-            vod_play_from: NAME,
-            vod_play_url: '打开管理页$hub',
         }],
     };
 }
 
 async function play() {
-    const url = managerUrl();
-    if (!url) return { parse: 0, url: '' };
-    return { parse: 1, url };
+    return { parse: 0, url: '' };
 }
 
 async function search(reqIn) {
