@@ -220,6 +220,10 @@ export default async function router(fastify) {
                         if (remotePanByKey && remotePanByKey.has(meta.key) && remotePanByKey.get(meta.key).name) {
                             out.name = remotePanByKey.get(meta.key).name;
                         }
+                        // 远端改名（中枢管理页 ✎ 改的名）覆盖下发名，视频源与网盘源都适用
+                        if (remote && remote.names && typeof remote.names[meta.key] === 'string' && remote.names[meta.key]) {
+                            out.name = remote.names[meta.key];
+                        }
                         out.key = 'nodejs_' + meta.key;
                         const stype = meta.type;
                         if (stype < 10) {
