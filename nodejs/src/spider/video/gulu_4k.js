@@ -1,574 +1,83 @@
 import req from '../../util/req.js';
 import crypto from 'crypto';
 import zlib from 'zlib';
-"use strict";
-// 咕噜4K —— 本地 Node 版（无需 jar / 无需 Python）
-//
-// 协议（1:1 复刻 gkd007.jar 里的 Gulu$GuluCrypto）：
-//   1) 握手：secp256r1 ECDH + AES-256-CBC（X-Handshake-Key 是 16 字节随机数的 32 位 hex，
-//      同时当作 32 字节 ASCII 密钥）+ zlib 包装的 protobuf；会话密钥由 HMAC-SHA256 两级派生。
-//   2) 业务：protobuf -> raw deflate -> AES-256-GCM(12B nonce) -> POST /app/bn/v2。
-//   3) 接口：boot(1/0) / 搜索(3/61) / 详情(3/62) / 列表(3/66)。
-//   播放：伪直链前缀 -> 解析接口 -> 取真实地址；直链（m3u8/mp4）直接 parse=0。
-//
-// 会话缓存在模块级变量（3 小时），进程内复用，不落盘。
-
-const ENDPOINT = 'http://103.45.132.22:19987/app/bn/v2';
+// 咕噜咕噜4K（LeeCatPaw lee_gulu4k 移植，替换 mycat 原 py_gulu_4k；key/名/meta 不变，只换实现）。
+// 直连咕噜 protobuf 后端（http://103.45.132.22:19987/app/bn/v2）；播放伪直链经站方自用解析接口还原，与 bundle 原实现一致。
+// 注意与旧版的差异（见批报告）：旧版另有模块级会话缓存（3 小时）与“咕噜4K”解析键 e1234a…，Lee 版无缓存、解析键为 96963…；
+// Lee 版多 JD-（鲸澜解析）前缀处理，旧版无。
+const BASE = 'http://103.45.132.22:19987/app/bn/v2';
 const UA = 'Dalvik/2.1.0 (Linux; U; Android 11; Pixel 4)';
-const SESSION_TTL = 3 * 3600 * 1000;
-const HANDSHAKE_VERSION = '1.0.0';
-
-// jar 里的 f：线路 code -> 中文名
-const GROUP_NAME = {
-  dyttm3u8: '电影天堂', bfzym3u8: '暴风资源', lzm3u8: '量子资源', ffm3u8: '非凡资源',
-  qq: '腾讯视频', qiyi: '爱奇艺', youku: '优酷', newxfyun: '咕噜4K', xfyun: '咕噜4K二线',
-  CO4K: '咖啡4K超清', jplink: '金牌极速', rose: '玫瑰4K', NBY: '蚂蚁资源',
-  qsvip: '旋风VIP', qingshan: '青山资源',
-};
-
-// jar 里的 d：伪直链前缀 -> 采集源名
-const PREFIX2SRC = {
-  'CO4K_': '咖啡4K', rose_: '咖啡4K',
-  'NBY-': '蚂蚁', 'qsvip-': '熊出没', 'qingshan-': '熊出没',
-  'JP-': '旋风金牌', 'xfy-': '新咕噜4K',
-};
-
-// jar 里的 e：采集源名 -> 解析接口
-const SRC2PARSE = {
-  '咖啡4K': 'https://co4k.1ljx.com:32010/api/?key=6db7285d-c228-4cee-918e-67a01ef7c3f8&url=',
-  '蚂蚁': 'https://api.nbyjson.top:7788/api/?key=8LJohkjTZHC2F9ct48&url=',
-  '熊出没': 'https://jf.hxx2023.cc/api?key=Uw5rZokFSAywqcLN&url=',
-  '旋风金牌': 'http://111.170.58.215:4470/api.php?id=',
-  '咕噜金牌': 'http://111.170.58.215:4470/api.php?id=',
-  '新咕噜4K': 'http://172.247.189.48:7788/dsxt/api.php?user=xt&key=969632c8da19b3ef8c56e5b51011d5e0&j=19227eae77225a30&url=',
-  '咕噜4K': 'http://172.247.189.48:7788/dsxt/api.php?user=xt&key=e1234a9df0358c6d78f20721a1b7b055&j=b8582063bca37121&url=',
-};
-
-const CATEGORIES = [
-  { type_id: '8', type_name: '电影' },
-  { type_id: '9', type_name: '电视剧' },
-  { type_id: '10', type_name: '综艺' },
-  { type_id: '11', type_name: '动漫' },
-  { type_id: '12', type_name: '短剧' },
-  { type_id: '6', type_name: '纪录片' },
-];
-
-// ==================== 小工具 ====================
-const buf = (x) => (Buffer.isBuffer(x) ? x : Buffer.from(String(x == null ? '' : x), 'utf8'));
-const u8 = (x) => buf(x).toString('utf8');
-const isMedia = (u) => /\.m3u8|\.mp4/i.test(String(u || ''));
-const pageOf = (b) => {
-  const raw = b && (b.pg != null ? b.pg : b.page != null ? b.page : b.pageNum);
-  const n = Math.floor(Number(raw || 1));
-  return Number.isFinite(n) && n > 0 ? n : 1;
-};
-const idOf = (b) => {
-  if (b == null) return '';
-  const raw = b.id != null ? b.id : b.ids != null ? b.ids : b.vod_id != null ? b.vod_id : b.url;
-  return String(Array.isArray(raw) ? (raw[0] == null ? '' : raw[0]) : raw == null ? '' : raw).trim();
-};
-const argOf = (b, keys, dflt) => {
-  for (const k of keys) {
-    const v = b && b[k];
-    if (v != null && String(v) !== '') return String(Array.isArray(v) ? v[0] : v);
-  }
-  return dflt;
-};
-
-// ==================== protobuf ====================
-function wv(n) {
-  n = Math.max(0, Math.floor(Number(n) || 0));
-  const out = [];
-  do {
-    let b = n % 128;
-    n = Math.floor(n / 128);
-    if (n) b |= 0x80;
-    out.push(b);
-  } while (n);
-  return Buffer.from(out);
-}
-
-class PB {
-  constructor() { this.parts = []; }
-  var(f, n) { this.parts.push(wv((f << 3) >>> 0), wv(n)); return this; }
-  byt(f, v) {
-    const d = v == null ? Buffer.alloc(0) : buf(v);
-    this.parts.push(wv(((f << 3) | 2) >>> 0), wv(d.length), d);
-    return this;
-  }
-  s(f, v) { return this.byt(f, Buffer.from(String(v == null ? '' : v), 'utf8')); }
-  out() { return Buffer.concat(this.parts); }
-}
-
-// 按字段顺序解出 {f, w, v}；w=0 时 v 是数字，其余是 Buffer
-function pbDecode(data) {
-  const d = data || Buffer.alloc(0);
-  const out = [];
-  let i = 0;
-  const n = d.length;
-  const readVar = () => {
-    let v = 0, sh = 0, b;
-    do {
-      if (i >= n) throw new Error('pb varint truncated');
-      b = d[i++];
-      v += (b & 0x7f) * Math.pow(2, sh);
-      sh += 7;
-      if (sh > 70) throw new Error('pb varint too long');
-    } while (b & 0x80);
-    return v;
-  };
-  while (i < n) {
-    const tag = readVar();
-    const f = Math.floor(tag / 8), w = tag % 8;
-    if (w === 0) {
-      out.push({ f, w, v: readVar() });
-    } else if (w === 2) {
-      const ln = readVar();
-      if (ln < 0 || i + ln > n) throw new Error('pb length overflow');
-      out.push({ f, w, v: d.subarray(i, i + ln) });
-      i += ln;
-    } else if (w === 5) {
-      out.push({ f, w, v: d.subarray(i, i + 4) });
-      i += 4;
-    } else if (w === 1) {
-      out.push({ f, w, v: d.subarray(i, i + 8) });
-      i += 8;
-    } else {
-      throw new Error('pb wire ' + w);
-    }
-  }
-  return out;
-}
-
-const safePb = (d) => { try { return pbDecode(d); } catch (e) { return []; } };
-
-function pbf(data, num, wt = 2) {
-  for (const x of pbDecode(data)) {
-    if (x.f === num && x.w === wt) return x.v;
-  }
-  return null;
-}
-
-const ps = (data, num) => {
-  const v = pbf(data, num, 2);
-  return v == null ? '' : u8(v);
-};
-
-// ==================== 压缩 ====================
-const pkcs7Pad = (b, size) => {
-  const n = size - (b.length % size || size) || size;
-  return Buffer.concat([b, Buffer.alloc(n, n)]);
-};
-
-// 服务端握手响应没做 PKCS#7 填充（实测），但也兼容带填充的情况
-function inflateTolerant(b, raw) {
-  const fn = raw ? zlib.inflateRawSync : zlib.inflateSync;
+const cat = [['movie','电影',8],['tv','电视剧',9],['variety','综艺',10],['anime','动漫',11],['short','短剧',12],['doc','纪录片',6],['cn','大陆剧',34],['hk','港剧',41],['tw','台剧',42],['us','美剧',35],['kr','韩剧',36],['jp','日剧',38],['th','泰剧',39],['uk','英剧',37],['ru','俄剧',45]];
+const orange = { '1':['推荐',48], '2':['电影',2], '3':['剧集',3], '5':['短剧',61], '6':['动漫',59], '7':['综艺',57] };
+const orangeRanks = { '2':[['2','全部'],['50','今日热门'],['79','海外上升榜'],['65','豆瓣Top250']], '3':[['3','全部'],['55','今日热门'],['67','美剧人气榜'],['68','韩剧热播榜'],['69','日剧热度榜']], '6':[['59','今日热门'],['72','日漫人气榜'],['73','少儿必看榜']], '7':[['57','今日热门'],['75','海外综艺榜']] };
+const lines = {dyttm3u8:'电影天堂',bfzym3u8:'暴风资源',lzm3u8:'量子资源',ffm3u8:'非凡资源',qq:'腾讯视频',qiyi:'爱奇艺',youku:'优酷',mgtv:'芒果TV',newxfyun:'咕噜4K',xfyun:'咕噜4K二线',CO4K:'咖啡4K超清',jplink:'金牌极速',rose:'玫瑰4K',NBY:'蚂蚁资源',qsvip:'旋风VIP',qingshan:'青山资源',JD4K:'鲸宝4K',iyf4k:'爱壹帆4K'};
+const cipherNames = {'CO4K_':'咖啡4K','rose_':'咖啡4K','NBY-':'蚂蚁','qsvip-':'熊出没','qingshan-':'熊出没','JP-':'旋风金牌','xfy-':'新咕噜4K','JD-':'鲸澜解析'};
+const flagNames = {'咕噜4K':'新咕噜4K','咕噜4K二线':'咕噜4K总接口','玫瑰4K':'咖啡4K','咖啡4K':'咖啡4K','金牌极速':'旋风金牌','蚂蚁资源':'蚂蚁','旋风VIP':'熊出没','青山资源':'熊出没','鲸宝4K':'鲸澜解析'};
+const fallback = {'咖啡4K':'https://co4k.1ljx.com:32010/api/?key=6db7285d-c228-4cee-918e-67a01ef7c3f8&url=','蚂蚁':'https://api.nbyjson.top:7788/api/?key=8LJohkjTZHC2F9ct48&url=','熊出没':'https://jf.hxx2023.cc/api?key=Uw5rZokFSAywqcLN&url=','旋风金牌':'http://111.170.58.215:4470/api.php?id=','鲸澜解析':'https://jiexi.jdyx.pro/api/?key=8a94da668d980bae94fbc8dd3fd115ce&url=','咕噜4K总接口':'https://xfyvideochandi.online/p.php?id=','新咕噜4K':'http://172.247.189.48:7788/dsxt/api.php?user=xt&key=969632c8da19b3ef8c56e5b51011d5e0&j=19227eae77225a30&url='};
+const concat = (...parts) => Buffer.concat(parts.map(x => Buffer.isBuffer(x) ? x : Buffer.from(x)));
+function varint(value) { let n=BigInt(value), out=[]; do {let b=Number(n&127n); n>>=7n; out.push(b|(n?128:0));} while(n); return Buffer.from(out); }
+const pv=(f,v)=>concat(varint(f*8),varint(v));
+const pb=(f,v)=>{const b=Buffer.isBuffer(v)?v:Buffer.from(String(v)); return concat(varint(f*8+2),varint(b.length),b);};
+function decode(buf) { const out=[]; let p=0; const read=()=>{let n=0n,s=0n; while(p<buf.length){const b=buf[p++];n|=BigInt(b&127)<<s;if(!(b&128))return Number(n);s+=7n;}throw Error('bad protobuf');}; while(p<buf.length){const tag=read(), f=tag>>3, w=tag&7; if(w===0)out.push([f,w,read()]);else if(w===2){const len=read();if(len<0||p+len>buf.length)throw Error('bad protobuf length');out.push([f,w,buf.subarray(p,p+len)]);p+=len;}else if(w===1)p+=8;else if(w===5)p+=4;else throw Error('bad protobuf wire');}return out; }
+const first=(fields,f,w)=>fields.find(x=>x[0]===f&&(w===undefined||x[1]===w))?.[2];
+const str=x=>Buffer.isBuffer(x)?x.toString('utf8'):String(x??'');
+async function postBin(url, body, headers = {}) {
   try {
-    return fn(b);
+    const r = await req({ method: 'POST', url, data: body, timeout: 25000, responseType: 'arraybuffer',
+      headers: { 'Content-Type': 'application/x-protobuf', 'User-Agent': UA, 'X-Player-Page-Protection': '1', ...headers }, maxRedirects: 5 });
+    if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`);
+    return Buffer.from(r.data || []);
   } catch (e) {
-    const pad = b.length ? b[b.length - 1] : 0;
-    if (pad >= 1 && pad <= 16 && pad <= b.length) {
-      try { return fn(b.subarray(0, b.length - pad)); } catch (e2) { /* 落回原错误 */ }
-    }
+    if (e && e.response) throw new Error('HTTP ' + e.response.status + ' ' + url);
     throw e;
   }
 }
-
-// ==================== 网络 ====================
-async function request(url, opt = {}) {
-  const method0 = (opt.method || 'GET').toUpperCase();
-  const body = opt.body == null ? undefined : opt.body;
-  const method = (body && method0 === 'GET') ? 'POST' : method0;
-  const headers = Object.assign({}, opt.headers || {});
-  const timeout = opt.timeout || 30000;
+async function getText(url) {
   try {
-    const r = await req({ method, url, headers, data: body, timeout, responseType: 'arraybuffer', maxRedirects: 5, validateStatus: () => true });
-    return { status: r.status, headers: r.headers || {}, body: Buffer.from(r.data || []) };
+    const r = await req({ method: 'GET', url, headers: { 'User-Agent': UA }, timeout: 20000, responseType: 'text', maxRedirects: 5 });
+    if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`);
+    return typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '');
   } catch (e) {
+    if (e && e.response) throw new Error('HTTP ' + e.response.status + ' ' + url);
     if (typeof fetch !== 'undefined') {
       const ctl = new AbortController();
-      const tt = setTimeout(() => ctl.abort(), timeout);
+      const t = setTimeout(() => ctl.abort(), 20000);
       try {
-        const r = await fetch(url, { method, headers, body, signal: ctl.signal, redirect: 'follow' });
-        const buf = Buffer.from(await r.arrayBuffer());
-        const h = {}; r.headers.forEach((v, k) => { h[k] = v; });
-        return { status: r.status, headers: h, body: buf };
-      } finally { clearTimeout(tt); }
+        const r = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctl.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+        return await r.text();
+      } finally { clearTimeout(t); }
     }
     throw e;
   }
 }
-
-const post = (url, body, headers) => request(url, { method: 'POST', headers, body });
-
-// ==================== 握手 + 会话 ====================
-let SESSION = null;
-let HANDSHAKING = null;
-
-function dumpResponse(tag, resp) {
-  try {
-    console.error('[咕噜4K] ' + tag + ' 服务端状态: ' + resp.status + ' ctype=' + (resp.headers && resp.headers['content-type']));
-    console.error('[咕噜4K] 原始响应(base64): ' + resp.body.toString('base64'));
-    console.error('[咕噜4K] 原始响应(text): ' + resp.body.toString('utf8').slice(0, 500));
-  } catch (e) { /* 忽略 */ }
+class Client {
+  constructor(){this.ecdh=crypto.createECDH('prime256v1');this.ecdh.generateKeys();this.androidId=crypto.randomBytes(8).toString('hex');this.session='';this.key=null;this.booted=false;this.apis={};this.apiIds={};this.lastSearch=0;this.pending=null;}
+  async ensure(){if(this.key&&this.booted)return; if(this.pending)return this.pending;this.pending=(async()=>{await this.handshake();await this.boot();})().finally(()=>{this.pending=null;});return this.pending;}
+  async handshake(){const key=crypto.randomBytes(16).toString('hex');const iv=crypto.randomBytes(16);const inner=concat(pv(1,1),pv(2,1),pv(3,1));const outer=concat(pb(1,this.ecdh.getPublicKey(undefined,'uncompressed')),pb(2,'1.0.0'),pb(3,inner));const enc=crypto.createCipheriv('aes-256-cbc',Buffer.from(key),iv);const body=concat(iv,enc.update(zlib.deflateSync(outer,{level:5})),enc.final()).toString('base64');const resp=Buffer.from((await postBin(BASE,Buffer.from(body),{'X-Handshake-Key':key})).toString(),'base64');const dec=crypto.createDecipheriv('aes-256-cbc',Buffer.from(key),resp.subarray(0,16));const fields=decode(zlib.inflateSync(concat(dec.update(resp.subarray(16)),dec.final())));this.session=str(first(fields,1,2));const pub=first(fields,2,2);if(!this.session||!pub)throw Error('handshake failed');const shared=this.ecdh.computeSecret(pub);const prk=crypto.createHmac('sha256',this.session).update(shared).digest();this.key=crypto.createHmac('sha256',prk).update(concat('v2-session',Buffer.from([1]))).digest();}
+  async boot(){const a=this.androidId;const info=concat(pb(1,'咕噜咕噜'),pb(2,'2.1.2'),pb(3,'com.jymqfh.xee'),pb(4,a),pb(5,'212'));const state=concat(pb(1,a),pv(2,0),pb(3,'11'),pb(4,'Pixel 4'),pb(5,'google/redfin/redfin:11/RQ3A.211001.001'),pb(6,'google'),pb(7,'redfin'),pv(8,0),pb(9,'unknown'),pb(10,'unknown'),pv(11,0),pv(12,30));const result=await this.api(1,0,concat(pb(1,'v1'),pb(2,'Android 11'),pb(3,'gulu'),pb(4,info),pb(5,state)));if(!result)throw Error('boot failed');this.booted=true;for(const [f,w,v] of decode(result.payload||Buffer.alloc(0))){if(f!==7||w!==2)continue;const x=decode(v),name=str(first(x,2,2)),url=str(first(x,3,2));if(name&&url){this.apis[name]=url;this.apiIds[name]=first(x,1,0);}}}
+  async api(service,method,body=Buffer.alloc(0)){if(!this.key)throw Error('no key');if(method===61){const delay=2800-(Date.now()-this.lastSearch);if(this.lastSearch&&delay>0)await new Promise(r=>setTimeout(r,delay));this.lastSearch=Date.now();}const ts=Date.now();const inner=concat(pv(1,ts),pv(2,service),pv(3,method),pb(4,this.androidId),pb(5,Buffer.alloc(0)),pb(6,body),pv(7,ts));const nonce=crypto.randomBytes(12),enc=crypto.createCipheriv('aes-256-gcm',this.key,nonce);const blob=concat(nonce,enc.update(zlib.deflateRawSync(inner)),enc.final(),enc.getAuthTag());const raw=await postBin(BASE,concat(pv(1,ts),pb(2,blob)),{'X-Session-Id':this.session});const value=first(decode(raw),2,2);if(!value||value.length<28)throw Error('empty encrypted response');const decr=crypto.createDecipheriv('aes-256-gcm',this.key,value.subarray(0,12));decr.setAuthTag(value.subarray(value.length-16));const fields=decode(zlib.inflateRawSync(concat(decr.update(value.subarray(12,-16)),decr.final())));return {code:first(fields,2,0),payload:first(fields,4,2)};}
 }
-
-async function handshake() {
-  // Node 里这条曲线叫 prime256v1（等价 secp256r1）
-  const ecdh = crypto.createECDH('prime256v1');
-  ecdh.generateKeys();
-  const pub = ecdh.getPublicKey(null, 'uncompressed'); // 65 字节 04||X||Y
-  const inner = new PB().var(1, 1).var(2, 1).var(3, 1).out();
-  const body = new PB().byt(1, pub).s(2, HANDSHAKE_VERSION).byt(3, inner).out();
-
-  // 注意：必须是 16 字节随机数的 32 位 hex；服务端按 32 字节 ASCII 当 AES-256 密钥，
-  // 16 位 hex 会直接 400 invalid handshake key。
-  const hk = crypto.randomBytes(16).toString('hex');
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(hk, 'utf8'), iv);
-  const ct = Buffer.concat([cipher.update(pkcs7Pad(zlib.deflateSync(body, { level: 5 }), 16)), cipher.final()]);
-  const payload = Buffer.from(Buffer.concat([iv, ct]).toString('base64'), 'utf8');
-
-  const resp = await post(ENDPOINT, payload, {
-    'Content-Type': 'text/plain',
-    'User-Agent': UA,
-    'X-Player-Page-Protection': '1',
-    'X-Handshake-Key': hk,
-  });
-  if (resp.status !== 200) {
-    dumpResponse('握手', resp);
-    throw new Error('握手失败 HTTP ' + resp.status + ' ' + resp.body.toString('utf8').slice(0, 100));
-  }
-
-  let session = '';
-  let spub = null;
-  try {
-    const raw = Buffer.from(resp.body.toString('utf8').trim(), 'base64');
-    if (raw.length < 32 || (raw.length - 16) % 16 !== 0) throw new Error('响应长度异常 ' + raw.length);
-    const dec = crypto.createDecipheriv('aes-256-cbc', Buffer.from(hk, 'utf8'), raw.subarray(0, 16));
-    const plain = Buffer.concat([dec.update(raw.subarray(16)), dec.final()]);
-    const data = inflateTolerant(plain, false);
-    session = ps(data, 1);
-    spub = pbf(data, 2, 2);
-  } catch (e) {
-    dumpResponse('握手解密', resp);
-    throw new Error('握手响应解析失败: ' + e.message);
-  }
-  if (!session || !spub || spub.length !== 65 || spub[0] !== 4) {
-    dumpResponse('握手字段', resp);
-    throw new Error('握手失败：session/spub 无效');
-  }
-
-  const shared = ecdh.computeSecret(spub);
-  const mac1 = crypto.createHmac('sha256', Buffer.from(session, 'utf8')).update(shared).digest();
-  const key = crypto.createHmac('sha256', mac1).update(Buffer.from('v2-session\x01', 'utf8')).digest().subarray(0, 32);
-
-  return {
-    session,
-    key,
-    d: crypto.randomBytes(16).toString('hex'),
-    expires: Date.now() + SESSION_TTL,
-  };
-}
-
-async function ensure() {
-  if (SESSION && SESSION.expires > Date.now()) return SESSION;
-  if (!HANDSHAKING) {
-    HANDSHAKING = handshake()
-      .then((s) => { SESSION = s; return s; })
-      .finally(() => { HANDSHAKING = null; });
-  }
-  return HANDSHAKING;
-}
-
-async function callOnce(s, api, action, body) {
-  const ts = Date.now();
-  const inner = new PB()
-    .var(1, ts)
-    .var(2, api)
-    .var(3, action)
-    .s(4, s.d)
-    .byt(5, Buffer.alloc(0))
-    .byt(6, body || Buffer.alloc(0))
-    .var(7, ts)
-    .out();
-
-  const nonce = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', s.key, nonce);
-  const enc = Buffer.concat([cipher.update(zlib.deflateRawSync(inner)), cipher.final(), cipher.getAuthTag()]);
-  const outer = new PB().var(1, ts).byt(2, Buffer.concat([nonce, enc])).out();
-
-  const resp = await post(ENDPOINT, outer, {
-    'Content-Type': 'application/x-protobuf',
-    'User-Agent': UA,
-    'X-Player-Page-Protection': '1',
-    'X-Session-Id': s.session,
-  });
-  if (resp.status !== 200) {
-    throw new Error('请求失败 HTTP ' + resp.status + ' ' + resp.body.toString('utf8').slice(0, 120));
-  }
-  const blob = pbf(resp.body, 2, 2);
-  if (!blob || blob.length < 28) {
-    throw new Error('响应异常 ' + resp.body.toString('base64').slice(0, 120));
-  }
-  const dec = crypto.createDecipheriv('aes-256-gcm', s.key, blob.subarray(0, 12));
-  dec.setAuthTag(blob.subarray(blob.length - 16));
-  const plain = Buffer.concat([dec.update(blob.subarray(12, blob.length - 16)), dec.final()]);
-  const outerPlain = inflateTolerant(plain, true);
-  const data = pbf(outerPlain, 4, 2);
-  return data == null ? null : data;
-}
-
-async function call(api, action, body) {
-  const s = await ensure();
-  try {
-    return await callOnce(s, api, action, body);
-  } catch (e) {
-    // 会话过期/被踢：清缓存重握手一次
-    if (SESSION === s) {
-      SESSION = null;
-      const s2 = await ensure();
-      return callOnce(s2, api, action, body);
-    }
-    throw e;
-  }
-}
-
-// ==================== 数据映射 ====================
-function item(b) {
-  let vid = '', name = '', pic = '', desc = '', remark = '', year = '', area = '';
-  const tags = [];
-  for (const { f, w, v } of safePb(b)) {
-    if (w === 0 && f === 1) vid = String(v);
-    else if (w === 0 && f === 2) year = String(v);
-    else if (w === 2 && f === 3) name = u8(v);
-    else if (w === 2 && f === 6) pic = u8(v);
-    else if (w === 2 && f === 7 && !pic) pic = u8(v);
-    else if (w === 2 && (f === 9 || f === 20) && !desc) desc = u8(v);
-    else if (w === 2 && f === 11) remark = u8(v);
-    else if (w === 2 && f === 16 && !area) area = u8(v);
-    else if (w === 2 && f === 17) tags.push(u8(v));
-  }
-  if (!vid || !name) return null;
-  return {
-    vod_id: vid,
-    vod_name: name,
-    vod_pic: pic || '',
-    vod_remarks: remark || desc || '',
-    vod_year: year || '',
-    vod_area: area || '',
-    type_name: tags.slice(0, 2).join('、'),
-  };
-}
-
-function itemsOf(resp, limit = 60) {
-  const out = [];
-  if (!resp) return out;
-  for (const want of [66, 1]) {
-    for (const { f, w, v } of safePb(resp)) {
-      if (f !== want || w !== 2 || v.length < 20) continue;
-      const it = item(v);
-      if (it) out.push(it);
-      if (out.length >= limit) break;
-    }
-    if (out.length) return out;
-  }
-  // 兜底：更老的嵌套结构
-  for (const { f, w, v } of safePb(resp)) {
-    if (w !== 2 || v.length < 30) continue;
-    for (const x of safePb(v)) {
-      if (x.f === 3 && x.w === 2 && x.v.length > 30) {
-        const it = item(x.v);
-        if (it) out.push(it);
-      }
-    }
-    if (out.length >= limit) break;
-  }
-  return out.slice(0, limit);
-}
-
-async function listByType(typeId, page) {
-  const body = new PB().var(1, Number(typeId) || 8).var(2, Number(page) || 1).out();
-  return itemsOf(await call(3, 66, body));
-}
-
-async function searchBy(keyword, page) {
-  const body = new PB()
-    .s(1, keyword)
-    .var(2, Number(page) || 1)
-    .byt(5, new PB().var(1, 1).var(2, 0).s(3, 'vod_hits_week').out())
-    .out();
-  return itemsOf(await call(3, 61, body));
-}
-
-async function detailOf(vid) {
-  const body = new PB()
-    .var(1, Number(vid) || 0)
-    .s(4, 'APP_PLATFORM_ANDROID_TV')
-    .var(5, 0)
-    .out();
-  const resp = await call(3, 62, body);
-  if (!resp) return null;
-
-  const vod = { vod_id: String(vid) };
-  const actors = [], directors = [], groups = [], tags = [];
-  const strip = (s) => s.replace(/<[^>]+>/g, '');
-
-  for (const { f, w, v } of safePb(resp)) {
-    if (w !== 2) continue;
-    if (f === 75) {
-      let gname = '';
-      const eps = [];
-      for (const g of safePb(v)) {
-        if (g.w === 2 && g.f === 1) {
-          gname = u8(g.v);
-        } else if (g.w === 2 && g.f === 2 && g.v.length > 10) {
-          let title = '', url = '', idx = '';
-          for (const e of safePb(g.v)) {
-            if (e.w === 0 && e.f === 1) idx = String(e.v);
-            else if (e.w === 2 && e.f === 3) url = u8(e.v);
-            else if (e.w === 2 && e.f === 4) title = u8(e.v);
-          }
-          if (url) {
-            if (!title || /^\d+$/.test(title)) title = '第' + (title || idx || eps.length + 1) + '集';
-            eps.push(title + '$' + url);
-          }
-        }
-      }
-      if (eps.length) groups.push([GROUP_NAME[gname] || gname || '线路', eps]);
-      continue;
-    }
-    const txt = u8(v);
-    if (f === 5) vod.vod_name = txt;
-    else if (f === 13) vod.vod_pic = txt;
-    else if (f === 21) vod.vod_content = strip(txt);
-    else if (f === 6 && vod.vod_content == null) vod.vod_content = strip(txt);
-    else if (f === 22) vod.vod_remarks = txt;
-    else if (f === 30) vod.vod_year = txt;
-    else if (f === 11) tags.push(txt);
-    else if (f === 17) actors.push(txt);
-    else if (f === 18) directors.push(txt);
-  }
-
-  vod.vod_actor = actors.join('、');
-  vod.vod_director = directors.join('、');
-  vod.type_name = tags.slice(0, 3).join('、');
-  vod.vod_play_from = groups.map((g) => g[0]).join('$$$');
-  vod.vod_play_url = groups.map((g) => g[1].join('#')).join('$$$');
-  return vod;
-}
-
-// ==================== 播放解析 ====================
-async function playOf(rawIn) {
-  const raw = String(rawIn == null ? '' : rawIn);
-  const header = { 'User-Agent': 'Mozilla/5.0' };
-  if (isMedia(raw)) return { parse: 0, url: raw, header };
-
-  let src = null;
-  for (const prefix of Object.keys(PREFIX2SRC)) {
-    if (raw.startsWith(prefix)) { src = PREFIX2SRC[prefix]; break; }
-  }
-  const base = src ? SRC2PARSE[src] : null;
-  if (!base) return { parse: 1, jx: 1, url: raw, header };
-
-  const target = base + encodeURIComponent(raw);
-  try {
-    const resp = await request(target, {
-      headers: { 'User-Agent': 'okhttp/4.1.0', Referer: 'https://glgl.tv/' },
-      timeout: 15000,
-    });
-    const txt = resp.body.toString('utf8');
-    const m = /"url"\s*:\s*"([^"]+)"/.exec(txt);
-    if (m) {
-      const url = m[1].replace(/\\\//g, '/');
-      return { parse: 0, url, header };
-    }
-    try {
-      const j = JSON.parse(txt);
-      if (j && j.url) return { parse: 0, url: String(j.url).replace(/\\\//g, '/'), header };
-    } catch (e) { /* 不是 JSON */ }
-  } catch (e) {
-    console.error('[咕噜4K] 播放解析失败:', e.message);
-  }
-  return { parse: 1, url: target, header };
-}
-
-// ==================== 路由 ====================
-const meta = {
-  key: 'py_gulu_4k',
-  name: '💧咕噜 - 4K',
-  type: 3,
-  searchable: 1,
-  quickSearch: 1,
-  filterable: 1,
-};
-
-async function home() {
-  let list = [];
-  try {
-    list = await listByType(9, 1);
-  } catch (e) {
-    console.error('[咕噜4K] 首页失败:', e.message);
-  }
-  return { class: CATEGORIES, filters: {}, list };
-}
-
-async function category(b) {
-  const page = pageOf(b);
-  const tid = argOf(b, ['tid', 'type_id', 'id'], '8');
-  try {
-    const list = await listByType(tid, page);
-    return { list, page, pagecount: list.length >= 10 ? page + 1 : page, limit: 20, total: list.length < 10 ? list.length : 9999 };
-  } catch (e) {
-    console.error('[咕噜4K] 分类失败:', e.message);
-    return { list: [], page, pagecount: 1, limit: 20, total: 0 };
-  }
-}
-
-async function search(b) {
-  const page = pageOf(b);
-  const wd = argOf(b, ['wd', 'keyword', 'key', 'searchKey'], '');
-  try {
-    const list = await searchBy(wd, page);
-    return { list, page, pagecount: list.length >= 10 ? page + 1 : page, limit: 20, total: list.length < 10 ? list.length : 9999 };
-  } catch (e) {
-    console.error('[咕噜4K] 搜索失败:', e.message);
-    return { list: [], page, pagecount: 1, limit: 20, total: 0 };
-  }
-}
-
-async function detail(b) {
-  const vid = idOf(b);
-  if (!vid) return { list: [] };
-  try {
-    const vod = await detailOf(vid);
-    return { list: vod ? [vod] : [] };
-  } catch (e) {
-    console.error('[咕噜4K] 详情失败:', e.message);
-    return { list: [] };
-  }
-}
-
-async function play(b) {
-  const raw = idOf(b);
-  try {
-    return await playOf(raw);
-  } catch (e) {
-    console.error('[咕噜4K] 播放失败:', e.message);
-    return { parse: 1, url: raw, header: { 'User-Agent': 'Mozilla/5.0' } };
-  }
-}
-
+function item(raw){const f=decode(raw);return {vod_id:String(first(f,1,0)||''),vod_name:str(first(f,3,2)),vod_pic:str(first(f,6,2)),vod_remarks:str(first(f,11,2)||first(f,9,2))};}
+function items(payload){const result=[];if(!payload)return result;for(const [,w,v] of decode(payload)){if(w!==2||v.length<30)continue;let sub;try{sub=decode(v);}catch{continue;}const nested=sub.filter(x=>x[0]===66&&x[1]===2);if(nested.length){for(const x of nested){const d=item(x[2]);if(d.vod_id&&d.vod_name)result.push(d);}continue;}if(first(sub,2,0)!==undefined){const d=item(v);if(d.vod_id&&d.vod_name)result.push(d);}else for(const x of sub.filter(x=>x[0]===3&&x[1]===2&&x[2].length>30)){const d=item(x[2]);if(d.vod_id&&d.vod_name)result.push(d);}}return result;}
+function m66(id,page,isOrange,year='',sort=''){if(isOrange)return concat(pv(1,id),pv(2,page));let out=concat(pv(1,id),pb(2,varint(page)));if(year)out=concat(out,pb(3,year));if(sort)out=concat(out,pb(5,concat(pv(1,1),pb(2,varint(0)),pb(3,sort))));return out;}
+const IS_ORANGE = false;
 export default function createSpider() {
+  const isOrange = IS_ORANGE;
+  let client = new Client();
+  const ensure = async () => { try { await client.ensure(); } catch { client = new Client(); await client.ensure(); } return client; };
+  const pageOf = (b) => Math.max(1, parseInt(b?.page, 10) || 1);
+  const idOf = (b) => String(Array.isArray(b?.id) ? b.id[0] : b?.id || '');
+  const channel = async (id, page, year = '', sort = '') => { const c = await ensure(); const result = await c.api(3, 66, m66(id, page, isOrange, year, sort)); const list = items(result.payload); let pagecount = page + (list.length >= 2 ? 1 : 0), limit = Math.max(1, list.length), total = list.length; if (isOrange && result.payload) { const meta = first(decode(result.payload), 65, 2); if (meta) { const f = decode(meta); pagecount = first(f, 3, 0) || pagecount; limit = first(f, 2, 0) || limit; total = first(f, 4, 0) || total; } } else { const threshold = [8, 9, 10, 11, 12].includes(id) ? 10 : id === 6 ? 3 : 2; pagecount = page + (list.length >= threshold ? 1 : 0); limit = Math.max(list.length, threshold); } return { list, page, pagecount, limit, total }; };
   return {
-  meta,
-  api: async (fastify) => {
+  meta: { key: 'py_gulu_4k', name: '💧咕噜 - 4K', type: 3, searchable: 1, quickSearch: 1, filterable: 1 },
+  api: async function (fastify) {
     fastify.post('/init', async () => ({}));
-    fastify.post('/home', async () => home());
-    fastify.post('/category', async (req) => category(req.body || {}));
-    fastify.post('/search', async (req) => search(req.body || {}));
-    fastify.post('/detail', async (req) => detail(req.body || {}));
-    fastify.post('/play', async (req) => play(req.body || {}));
-  },
+    fastify.post('/home', async () => { const classes = isOrange ? Object.entries(orange).map(([type_id, [type_name]]) => ({ type_id, type_name })) : cat.map(([type_id, type_name]) => ({ type_id, type_name })); const filters = {}; for (const c of classes) { if (isOrange) { const ranks = orangeRanks[c.type_id]; if (ranks) filters[c.type_id] = [{ key: 'by', name: '榜单', value: ranks.map(([v, n]) => ({ v, n })) }]; } else filters[c.type_id] = [{ key: 'year', name: '年份', value: [{ n: '全部', v: '' }, ...Array.from({ length: 12 }, (_, i) => { const v = String(2026 - i); return { n: v, v }; })] }, { key: 'by', name: '排序', value: [{ n: '最热', v: 'vod_hits_week' }, { n: '最新', v: 'vod_time' }, { n: '评分', v: 'vod_score' }] }]; } let list = []; try { list = (await channel(isOrange ? 48 : 9, 1)).list.slice(0, 24); } catch {} return { class: classes, filters, list }; });
+    fastify.post('/category', async (request) => { const body = request.body || {}, page = pageOf(body), tid = String(body.id || ''), ext = body.extend || {}; let id; if (isOrange) { const entry = orange[tid]; id = entry ? Number(entry[1]) : Number(tid); const by = String(ext.by || ext.sort || ''); if (entry && orangeRanks[tid]?.some(([x]) => x === by)) id = Number(by); } else id = cat.find(([x]) => x === tid)?.[2] || Number(tid); if (!Number.isFinite(id)) return { list: [] }; return channel(id, page, String(ext.year || ''), String(ext.by || ext.sort || '')); });
+    fastify.post('/detail', async (request) => { const id = Number(idOf(request.body)); if (!Number.isFinite(id)) return { list: [] }; const c = await ensure(); const r = await c.api(3, 62, concat(pv(1, id), pb(4, 'APP_PLATFORM_ANDROID_TV'), pv(5, 0))); if (!r.payload) return { list: [] }; const f = decode(r.payload), vod = { vod_id: String(id), vod_name: str(first(f, 5, 2)), vod_pic: str(first(f, 13, 2)), vod_actor: f.filter(x => x[0] === 17 && x[1] === 2).map(x => str(x[2])).slice(0, 12).join('、'), vod_director: f.filter(x => x[0] === 18 && x[1] === 2).map(x => str(x[2])).join('、'), type_name: f.filter(x => x[0] === 12 && x[1] === 2).map(x => str(x[2])).slice(0, 4).join('/'), vod_content: str(first(f, 21, 2)), vod_remarks: str(first(f, 22, 2)), vod_area: str(first(f, 28, 2)), vod_year: str(first(f, 30, 2)) }; const from = [], urls = []; for (const [, w, v] of f.filter(x => x[0] === 75 && x[1] === 2)) { const src = decode(v), name = str(first(src, 1, 2)); let episodes = []; for (const e of src.filter(x => x[0] === 2 && x[1] === 2)) { const ep = decode(e[2]), url = str(first(ep, 3, 2)); if (!url.startsWith('http') && !Object.keys(cipherNames).some(prefix => url.startsWith(prefix))) continue; episodes.push(`${str(first(ep, 4, 2)) || `第${first(ep, 1, 0) || ''}集`}$${url}`); } if (episodes.length) { from.push(lines[name] || name || '线路'); urls.push(episodes.join('#')); } } vod.vod_play_from = from.join('$$$'); vod.vod_play_url = urls.join('$$$'); return { list: [vod] }; });
+    fastify.post('/search', async (request) => { const key = String(request.body?.wd || '').trim(), page = pageOf(request.body); if (!key) return { list: [] }; const c = await ensure(), sort = concat(pv(1, 1), pv(2, 0), pb(3, 'vod_hits_week')), body = concat(pb(1, key), pv(2, page), pb(5, sort)); let r = await c.api(3, 61, body); if (!r.payload || r.payload.length < 200) { await new Promise(resolve => setTimeout(resolve, 5500)); r = await c.api(3, 61, body); } const list = items(r.payload); return { list, page, pagecount: page + (list.length >= 20 ? 1 : 0), limit: Math.max(20, list.length), total: list.length }; });
+    fastify.post('/play', async (request) => { let id = idOf(request.body), flag = String(request.body?.flag || ''); const header = { 'User-Agent': UA }; if (!id) return { parse: 0, url: '', header }; if (/^https?:/i.test(id)) return { parse: /\.m3u8|m\.php/.test(id) ? 0 : 1, url: id, header }; if (/^(CO4K_|rose_)/.test(id)) id = id.replace(/ /g, '+'); const name = flagNames[flag] || cipherNames[Object.keys(cipherNames).find(x => id.startsWith(x))], c = await ensure(), url = (c.apis[name] || fallback[name] || '') + encodeURIComponent(id); if (!name || !url) return { parse: 0, url: '', header }; for (let i = 0; i < 2; i++) { try { const txt = await getText(url), got = JSON.parse(txt).url || txt.match(/"url"\s*:\s*"([^"]+)/)?.[1]; if (got) return { parse: 0, url: String(got).replace(/\\\//g, '/'), header }; } catch {} } return { parse: 0, url: '', header }; });
+  }
 };
 }
