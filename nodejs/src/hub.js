@@ -119,7 +119,7 @@ export const PAN_SOURCES = [
 // 第一阶段占位：步骤 4 填入已部署域名，形如
 // https://mycat-hub.xxx.workers.dev，不带末尾斜杠；
 // 为空表示未部署，跳过远端读取（/config 行为与现在完全一致）。
-export const HUB_WORKER_BASE = '';
+export const HUB_WORKER_BASE = 'https://mycat-hub.li768435813.workers.dev';
 
 // 成人源 key（仅此 3 个）：远端配置 hideAdult=true 时并入 disabled 下发过滤。
 export const ADULT_KEYS = ['py_huangguo_ai_local', 'py_duoju_local_node', 'py_hudie_yingyuan'];
