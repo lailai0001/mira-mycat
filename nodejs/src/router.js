@@ -8,7 +8,6 @@ import duanju_bashi from './spider/video/duanju_bashi.js';
 import duanju_daquan from './spider/video/duanju_daquan.js';
 import hema_duanju from './spider/video/hema_duanju.js';
 import hongdou_duanju from './spider/video/hongdou_duanju.js';
-import huangguo_ai_local from './spider/video/huangguo_ai_local.js';
 import jisu_zhuiju from './spider/video/jisu_zhuiju.js';
 import rebo_fast from './spider/video/rebo_fast.js';
 import xin6v from './spider/video/xin6v.js';
@@ -23,7 +22,6 @@ import wencaiyingshi from './spider/video/wencaiyingshi.js';
 import yueting from './spider/video/yueting.js';
 import xingya_short from './spider/video/xingya_short.js';
 import asmrba from './spider/video/asmrba.js';
-import xingmeng_asmr from './spider/video/xingmeng_asmr.js';
 import ximalaya from './spider/video/ximalaya.js';
 import yidong_4k from './spider/video/yidong_4k.js';
 import juzi_4k from './spider/video/juzi_4k.js';
@@ -45,7 +43,6 @@ import duoju_local_node from './spider/video/duoju_local_node.js';
 import netflix_cat from './spider/video/netflix_cat.js';
 import tencent_video from './spider/video/tencent_video.js';
 import zhenpin_video from './spider/video/zhenpin_video.js';
-import hudie_yingyuan from './spider/video/hudie_yingyuan.js';
 import guazi_2k from './spider/video/guazi_2k.js';
 import pomo_pan from './spider/video/pomo_pan.js';
 import shandian_tv from './spider/video/shandian_tv.js';
@@ -54,7 +51,7 @@ import hub_center from './spider/video/hub_center.js';
 import { arrangeSites, arrangeSitesWith, PAN_SOURCES, fetchRemoteConfig, ADULT_KEYS } from './hub.js';
 import req from './util/req.js';
 import createPanSpider from './spider/video/pan_hub.js';
-const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, huangguo_ai_local, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, asmrba, xingmeng_asmr, ximalaya, yidong_4k, juzi_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k, douban_hot, dongman_bashi, dshixiong_tv, fenzhu, linglingqi, mengtaiqi, zhuijudaren, xiaoyouzi, duse91, duoju_local_node, netflix_cat, tencent_video, zhenpin_video, hudie_yingyuan, guazi_2k, pomo_pan, shandian_tv, youtube_video, hub_center];
+const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, asmrba, ximalaya, yidong_4k, juzi_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k, douban_hot, dongman_bashi, dshixiong_tv, fenzhu, linglingqi, mengtaiqi, zhuijudaren, xiaoyouzi, duse91, duoju_local_node, netflix_cat, tencent_video, zhenpin_video, guazi_2k, pomo_pan, shandian_tv, youtube_video, hub_center];
 // 网盘条目由中枢 PAN_SOURCES 驱动、通用蜘蛛承接；与视频源分开注册，
 // 但下发时同样过中枢（排序/开关）。PAN_SOURCES 为空时这里就是空数组。
 // 注意：panSpiders 不再是模块级常量，见 router() 内的异步初始化：
