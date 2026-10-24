@@ -1,339 +1,118 @@
 import req from '../../util/req.js';
-function normHeaders(h) {
-  const o = {};
-  try { for (const [k, v] of Object.entries(h || {})) o[String(k).toLowerCase()] = Array.isArray(v) ? v.join(', ') : v; } catch (e) {}
-  return o;
-}
-// Cat-contract transport: axios (req) first, typeof-guarded fetch fallback only.
-// Returns engine-style { status, headers, text, content, data, buf } so the
-// original hmtv call sites keep working. HTTP error statuses are returned,
-// not thrown (original engine req resolved with status); network failures throw.
-async function httpReq(url, opt = {}) {
-  const o = opt || {};
-  const headers = Object.assign({}, o.headers || {});
-  delete headers['Accept-Encoding']; delete headers['accept-encoding'];
-  const timeout = o.timeout || 20000;
-  const binary = !!o.binary;
-  const method = (o.method || (o.body != null ? 'POST' : 'GET')).toUpperCase();
-  const data = o.body !== undefined ? o.body : o.data;
+// 动漫巴士（LeeCatPaw lee_dm84 移植，替换 mycat 原 py_dongman_bashi；key/名/注册不变）。
+// 直连 dm84.tv；原 bundle 用 cheerio（bridge.html），猫端无 cheerio，改写为正则解析，逻辑与原版一一对应。
+// 筛选表取自 bundle 开头的 leeLegacyFilters.dm84（逐字）。
+const HOST = 'https://dm84.tv';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36';
+async function reqText(url, opt = {}) {
+  const method = (opt.method || 'GET').toUpperCase();
+  const headers = Object.assign({ 'User-Agent': UA, Referer: new URL(url).origin + '/' }, opt.headers || {});
+  const timeout = opt.timeout || 15000;
+  const data = opt.body;
   try {
-    const r = await req({ method, url, headers, data, timeout, responseType: binary ? 'arraybuffer' : 'text', maxRedirects: 5 });
-    const buf = binary ? Buffer.from(r.data || []) : undefined;
-    const text = binary ? '' : (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? ''));
-    return { status: r.status || 200, headers: normHeaders(r.headers), text, content: text, data: r.data, buf };
+    const r = await req({ method, url, headers, data, timeout, responseType: 'text', maxRedirects: 5 });
+    return typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '');
   } catch (e) {
-    if (e && e.response) {
-      const d = e.response.data;
-      const buf = binary ? Buffer.from(d || []) : undefined;
-      const text = binary ? '' : (typeof d === 'string' ? d : JSON.stringify(d ?? ''));
-      return { status: e.response.status || 0, headers: normHeaders(e.response.headers), text, content: text, data: d, buf };
-    }
+    if (e && e.response) throw new Error('HTTP ' + e.response.status + ' ' + url);
     if (typeof fetch !== 'undefined') {
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), timeout);
       try {
-        const r = await fetch(url, { method, headers, body: (method === 'GET' || method === 'HEAD') ? undefined : data, signal: ctl.signal, redirect: 'follow' });
-        const headers2 = {}; try { r.headers.forEach((v, k) => { headers2[String(k).toLowerCase()] = v; }); } catch (e2) {}
-        if (binary) { const buf = Buffer.from(await r.arrayBuffer()); return { status: r.status, headers: headers2, text: '', content: '', data: buf, buf }; }
-        const text = await r.text(); return { status: r.status, headers: headers2, text, content: text, data: text };
+        const r = await fetch(url, { method, headers, body: data, signal: ctl.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+        return await r.text();
       } finally { clearTimeout(t); }
     }
     throw e;
   }
 }
-
-// 动漫巴士 · dm84.tv —— CatPaw 模块
-// 站点为 maccms 风格静态 HTML：首页/分类/搜索/详情均可正则解析；
-// 播放页 -> iframe(hhplayer) -> __HHJX_BOOTSTRAP__ -> /api/parse -> m3u8。
-const HOST = 'https://dm84.tv';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-const BASE_HEADERS = { 'User-Agent': UA, Referer: HOST + '/' };
-const CLASSES = [
-  { type_id: '1', type_name: '国漫' },
-  { type_id: '2', type_name: '日漫' },
-  { type_id: '3', type_name: '欧美动漫' },
-  { type_id: '4', type_name: '电影' },
-];
-
-const clean = (s) =>
-  String(s == null ? '' : s)
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
-const attr = (tag, name) => {
-  const m = new RegExp('\\b' + name + '="([^"]*)"', 'i').exec(tag || '');
-  return m ? m[1].replace(/&amp;/g, '&') : '';
-};
-const abs = (u) => {
-  const s = String(u || '').trim();
-  if (!s) return '';
-  if (s.startsWith('//')) return 'https:' + s;
-  if (s.startsWith('/')) return HOST + s;
-  return s;
-};
-const pageOf = (b) => Math.max(1, parseInt(b && (b.page || b.pg), 10) || 1);
-const detailId = (v) => {
-  const s = String(v == null ? '' : v);
-  const m = /\/(\d+)\.html/.exec(s) || /(\d+)/.exec(s);
-  return m ? m[1] : '';
-};
-
-async function get(url, opt = {}) {
-  const res = await httpReq(url, {
-    method: opt.method || 'GET',
-    headers: { ...BASE_HEADERS, ...(opt.headers || {}) },
-    body: opt.body,
-    timeout: opt.timeout || 20000,
-  });
-  const status = res && res.status;
-  if (status && status >= 400) throw new Error('HTTP ' + status + ' ' + url);
-  return String(res && res.content != null ? res.content : res);
-}
-
-function parseList(html) {
-  const out = [];
-  const seen = new Set();
-  const block = /<div class="item">([\s\S]*?)<\/div>/g;
-  let m;
-  while ((m = block.exec(html))) {
-    const s = m[1];
-    const titleTag = /<a([^>]*\bclass="title"[^>]*)>([\s\S]*?)<\/a>/.exec(s);
-    if (!titleTag) continue;
-    const href = attr(titleTag[1], 'href');
-    const vid = detailId(href);
-    if (!vid || seen.has(vid)) continue;
-    const name = clean(titleTag[2]) || clean(attr(titleTag[1], 'title'));
-    if (!name) continue;
-    seen.add(vid);
-
-    let pic = '';
-    const coverTag = /<a([^>]*\bclass="cover[^"]*"[^>]*)>/.exec(s);
-    if (coverTag) pic = attr(coverTag[1], 'data-bg') || attr(coverTag[1], 'src');
-    if (!pic || pic === '/') {
-      const img = /<img[^>]*\bsrc="([^"]+)"/i.exec(s);
-      if (img) pic = img[1];
-    }
-    const desc = /<span class="desc">([\s\S]*?)<\/span>/.exec(s);
-    out.push({
-      vod_id: vid,
-      vod_name: name,
-      vod_pic: abs(pic),
-      vod_remarks: clean(desc ? desc[1] : ''),
-    });
+const one = (value) => String(Array.isArray(value) ? value[0] : value || '');
+const pageOf = (body) => Math.max(1, Number.parseInt(body?.page, 10) || 1);
+const clean = (value) => String(value || '').replace(/[$#]/g, '_').trim();
+const full = (base, value) => { try { return value ? new URL(value, base).href : ''; } catch { return ''; } };
+const attr = (tag, key) => (String(tag).match(new RegExp('\\b' + key + '\\s*=\\s*["\']([^"\']*)["\']', 'i')) || [])[1] || '';
+const text = (s) => String(s || '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/\s+/g, ' ').trim();
+const match = (s, re) => (String(s || '').match(re) || [])[1] || '';
+function blocks(html, tag, cls) {
+  const out = []; const tags = new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi'); let m;
+  while ((m = tags.exec(html))) {
+    if (m[0].startsWith('</') || !new RegExp('\\bclass\\s*=\\s*["\'][^"\']*\\b' + cls + '\\b', 'i').test(m[0])) continue;
+    const start = m.index; const t = new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi'); t.lastIndex = tags.lastIndex;
+    let depth = 1, n; while ((n = t.exec(html))) { if (n[0].startsWith('</')) depth--; else if (!/\/\s*>$/.test(n[0])) depth++; if (!depth) { out.push(html.slice(start, t.lastIndex)); tags.lastIndex = t.lastIndex; break; } }
+    if (depth) break;
   }
   return out;
 }
-
-const listResult = (list, page, size = 20, last = 0) => ({
-  list,
-  page,
-  pagecount: last || page + (list.length >= size ? 1 : 0),
-  limit: size,
-  total: last ? last * size : list.length >= size ? 9999 : list.length,
-});
-
-// 分类/搜索页底部“尾页”链接给出真实总页数（如 /list-1-10.html -> 10）。
-function lastPage(html) {
-  const block = /<div class="card pages[^"]*">([\s\S]*?)<\/div>/.exec(html);
-  if (!block) return 0;
-  const tail = /(\d+)\.html"[^>]*>\s*尾页/.exec(block[1]);
-  return tail ? parseInt(tail[1], 10) || 0 : 0;
-}
-
-async function home() {
-  let list = [];
-  try {
-    list = parseList(await get(HOST + '/'));
-  } catch (e) {
-    /* 首页失败再用分类兜底 */
+const listResult = (page, list) => ({ page, pagecount: list.length ? page + 1 : page, limit: list.length, list });
+const categories = [['1', '国产动漫'], ['2', '日本动漫'], ['3', '欧美动漫'], ['4', '电影']]
+  .map(([type_id, type_name]) => ({ type_id, type_name }));
+const dmFilters = {"1": [{"name": "年份", "key": "year", "value": [{"n": "全部年份", "v": ""}, {"n": "2024", "v": "2024"}, {"n": "2023", "v": "2023"}, {"n": "2022", "v": "2022"}, {"n": "2021", "v": "2021"}, {"n": "2020", "v": "2020"}, {"n": "2019", "v": "2019"}, {"n": "2018", "v": "2018"}, {"n": "2017", "v": "2017"}, {"n": "2016", "v": "2016"}, {"n": "2015", "v": "2015"}]}, {"name": "类型", "key": "class", "value": [{"n": "全部类型", "v": ""}, {"n": "奇幻", "v": "奇幻"}, {"n": "战斗", "v": "战斗"}, {"n": "玄幻", "v": "玄幻"}, {"n": "穿越", "v": "穿越"}, {"n": "科幻", "v": "科幻"}, {"n": "武侠", "v": "武侠"}, {"n": "热血", "v": "热血"}, {"n": "眈美", "v": "眈美"}, {"n": "搞笑", "v": "搞笑"}, {"n": "动态漫画", "v": "动态漫画"}]}, {"name": "排序", "key": "by", "value": [{"n": "最新", "v": "time"}, {"n": "人气", "v": "hits"}, {"n": "评分", "v": "score"}]}], "2": [{"name": "年份", "key": "year", "value": [{"n": "全部年份", "v": ""}, {"n": "2024", "v": "2024"}, {"n": "2023", "v": "2023"}, {"n": "2022", "v": "2022"}, {"n": "2021", "v": "2021"}, {"n": "2020", "v": "2020"}, {"n": "2019", "v": "2019"}, {"n": "2018", "v": "2018"}, {"n": "2017", "v": "2017"}, {"n": "2016", "v": "2016"}, {"n": "2015", "v": "2015"}]}, {"name": "类型", "key": "class", "value": [{"n": "全部类型", "v": ""}, {"n": "冒险", "v": "冒险"}, {"n": "奇幻", "v": "奇幻"}, {"n": "战斗", "v": "战斗"}, {"n": "后宫", "v": "后宫"}, {"n": "热血", "v": "热血"}, {"n": "励志", "v": "励志"}, {"n": "搞笑", "v": "搞笑"}, {"n": "校园", "v": "校园"}, {"n": "机战", "v": "机战"}, {"n": "悬疑", "v": "悬疑"}, {"n": "治愈", "v": "治愈"}, {"n": "百合", "v": "百合"}, {"n": "恐怖", "v": "恐怖"}, {"n": "泡面番", "v": "泡面番"}, {"n": "恋爱", "v": "恋爱"}, {"n": "推理", "v": "推理"}]}, {"name": "排序", "key": "by", "value": [{"n": "最新", "v": "time"}, {"n": "人气", "v": "hits"}, {"n": "评分", "v": "score"}]}], "3": [{"name": "年份", "key": "year", "value": [{"n": "全部年份", "v": ""}, {"n": "2024", "v": "2024"}, {"n": "2023", "v": "2023"}, {"n": "2022", "v": "2022"}, {"n": "2021", "v": "2021"}, {"n": "2020", "v": "2020"}, {"n": "2019", "v": "2019"}, {"n": "2018", "v": "2018"}, {"n": "2017", "v": "2017"}, {"n": "2016", "v": "2016"}, {"n": "2015", "v": "2015"}]}, {"name": "类型", "key": "class", "value": [{"n": "全部类型", "v": ""}, {"n": "科幻", "v": "科幻"}, {"n": "冒险", "v": "冒险"}, {"n": "战斗", "v": "战斗"}, {"n": "百合", "v": "百合"}, {"n": "奇幻", "v": "奇幻"}, {"n": "热血", "v": "热血"}, {"n": "搞笑", "v": "搞笑"}]}, {"name": "排序", "key": "by", "value": [{"n": "最新", "v": "time"}, {"n": "人气", "v": "hits"}, {"n": "评分", "v": "score"}]}], "4": [{"name": "年份", "key": "year", "value": [{"n": "全部年份", "v": ""}, {"n": "2024", "v": "2024"}, {"n": "2023", "v": "2023"}, {"n": "2022", "v": "2022"}, {"n": "2021", "v": "2021"}, {"n": "2020", "v": "2020"}, {"n": "2019", "v": "2019"}, {"n": "2018", "v": "2018"}, {"n": "2017", "v": "2017"}, {"n": "2016", "v": "2016"}, {"n": "2015", "v": "2015"}]}, {"name": "类型", "key": "class", "value": [{"n": "全部类型", "v": ""}, {"n": "搞笑", "v": "搞笑"}, {"n": "奇幻", "v": "奇幻"}, {"n": "治愈", "v": "治愈"}, {"n": "科幻", "v": "科幻"}, {"n": "喜剧", "v": "喜剧"}, {"n": "冒险", "v": "冒险"}, {"n": "动作", "v": "动作"}, {"n": "爱情", "v": "爱情"}]}, {"name": "排序", "key": "by", "value": [{"n": "最新", "v": "time"}, {"n": "人气", "v": "hits"}, {"n": "评分", "v": "score"}]}]};
+function cards(html) {
+  const list = [];
+  for (const li of String(html).match(/<li\b[^>]*>[\s\S]*?<\/li>/gi) || []) {
+    const a = (li.match(/<a\b[^>]*>/i) || [])[0] || '';
+    const href = attr(a, 'href');
+    const name = attr(a, 'title').replace(/在线观看/g, '');
+    if (!href || !name) continue;
+    const desc = text(match(li, /<[^>]+class=["'][^"']*\bdesc\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i));
+    list.push({ vod_id: full(HOST, href), vod_name: name, vod_pic: full(HOST, attr(a, 'data-bg')), vod_remarks: desc });
   }
-  if (!list.length) {
-    try {
-      list = parseList(await get(HOST + '/list-1-1.html'));
-    } catch (e) {
-      /* 留空 */
-    }
-  }
-  return { class: CLASSES, filters: {}, list };
+  return list;
 }
-
-async function category(b) {
-  const tid = String(b.id || b.tid || b.type_id || '1').replace(/\D/g, '') || '1';
-  const page = pageOf(b);
-  const html = await get(HOST + '/list-' + tid + '-' + page + '.html');
-  return listResult(parseList(html), page, 20, lastPage(html));
-}
-
-async function search(b) {
-  const wd = String(b.wd || b.keyword || b.k || '').trim();
-  const page = pageOf(b);
-  if (!wd) return { list: [], page, pagecount: page, limit: 20, total: 0 };
-  const html = await get(HOST + '/s-' + encodeURIComponent(wd) + '---------' + page + '.html');
-  return listResult(parseList(html), page, 20, lastPage(html));
-}
-
-function parseDetail(html, vid) {
-  const titleTag = /<h1 class="v_title">([\s\S]*?)<\/h1>/.exec(html);
-  const name = clean(titleTag ? titleTag[1] : '');
-  const img = /<div class="cover">\s*<img[^>]*\bsrc="([^"]+)"/i.exec(html);
-  const descBlock = /<p class="v_desc">([\s\S]*?)<\/p>/.exec(html);
-  const descText = descBlock ? descBlock[1] : '';
-  const remarks = clean((/<span class="desc">([\s\S]*?)<\/span>/.exec(descText) || [])[1] || '');
-  const ems = [];
-  const emRe = /<em[^>]*>[^<]*<\/em>([\s\S]*?)(?=<em|$)/g;
-  let em;
-  while ((em = emRe.exec(descText))) ems.push(clean(em[1]));
-  const year = (ems[0] || '').match(/\d{4}/) ? ems[0].match(/\d{4}/)[0] : '';
-  const area = ems[1] || '';
-
-  const introStart = html.search(/<div[^>]*id="intro"[^>]*>/i);
-  let content = '';
-  if (introStart >= 0) {
-    const tail = html.slice(introStart);
-    const end = tail.search(/<div class="card/i);
-    content = clean(tail.slice(0, end > 0 ? end : 20000));
-  }
-
-  const tabs = [];
-  const tabsBlock = /<ul class="tab_control play_from">([\s\S]*?)<\/ul>/.exec(html);
-  if (tabsBlock) {
-    const li = /<li[^>]*>([\s\S]*?)<\/li>/g;
-    let t;
-    while ((t = li.exec(tabsBlock[1]))) tabs.push(clean(t[1]));
-  }
-
+function detail(id, html) {
   const lines = [];
-  const panel = /<ul class="play_list[^"]*">([\s\S]*?)<\/ul>/g;
-  let p;
-  while ((p = panel.exec(html))) {
-    const eps = [];
-    const a = /<a[^>]*\bhref="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-    let e;
-    while ((e = a.exec(p[1]))) {
-      const href = attr(e[0], 'href');
-      if (!href || /^javascript:/i.test(href)) continue;
-      const u = abs(href);
-      const n = clean(e[2]);
-      if (u) eps.push((n || '播放') + '$' + u);
-    }
-    if (eps.length) lines.push(eps.join('#'));
+  const title = text(match(html, /<[^>]+class=["'][^"']*\bv_title\b[^"']*["'][^>]*>[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/i));
+  const coverBox = (blocks(html, 'div', 'cover')[0] || '');
+  const coverImg = (coverBox.match(/<img\b[^>]*>/i) || [])[0] || '';
+  const pic = full(HOST, attr(coverImg, 'src'));
+  const content = text(match(html, /<[^>]+class=["'][^"']*\bv_desc\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i));
+  const tabBox = (blocks(html, 'ul', 'tab_control')[0] || blocks(html, 'div', 'tab_control')[0] || '');
+  const tabNames = [...tabBox.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)].map((m) => text(m[1]));
+  for (const [i, box] of blocks(html, 'div', 'play_list').entries()) {
+    const episodes = [...box.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+      .map((m) => ({ name: `第${text(m[2])}集`, url: full(HOST, m[1]) }))
+      .filter((e) => e.url)
+      .map((e) => `${clean(e.name) || '播放'}$${e.url}`);
+    if (episodes.length) lines.push({ name: tabNames[i] || `线路${i + 1}`, items: episodes });
   }
-  if (!name || !lines.length) return null;
-
-  return {
-    vod_id: vid,
-    vod_name: name,
-    vod_pic: abs(img ? img[1] : ''),
-    vod_remarks: remarks,
-    vod_year: year,
-    vod_area: area,
-    vod_content: content,
-    vod_play_from: lines.map((x, i) => tabs[i] || '线路' + (i + 1)).join('$$$'),
-    vod_play_url: lines.join('$$$'),
-  };
+  return { list: [{ vod_id: id, vod_name: title, vod_pic: pic, vod_content: content,
+    vod_play_from: lines.map((l) => l.name).join('$$$'),
+    vod_play_url: lines.map((l) => l.items.join('#')).join('$$$') }] };
 }
-
-async function detail(b) {
-  const vid = detailId(b.id || b.ids || b.url || '');
-  if (!vid) return [];
-  const html = await get(HOST + '/v/' + vid + '.html');
-  const one = parseDetail(html, vid);
-  return one ? [one] : [];
-}
-
-async function youkuLine(vid) {
-  const utid = Math.random().toString(36).slice(2);
-  const cb = 'jsonp_' + utid;
-  const qs =
-    'vid=' + encodeURIComponent(vid) +
-    '&ccode=0564&client_ip=192.168.1.1&utid=' + utid +
-    '&client_ts=' + Math.floor(Date.now() / 1000) + '&callback=' + cb;
-  const raw = await get('https://ups.youku.com/ups/get.json?' + qs, {
-    headers: { 'User-Agent': UA, Referer: 'https://hhjx.hhplayer.com/' },
-  });
-  let data;
-  try {
-    data = JSON.parse(String(raw).replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, ''));
-  } catch (e) {
-    return '';
-  }
-  if (!data || !data.data || data.data.error) return '';
-  const streams = (data.data.stream || []).filter((s) => s && s.m3u8_url);
-  if (!streams.length) return '';
-  streams.sort(
-    (a, b) =>
-      Number(b.width || 0) * Number(b.height || 0) - Number(a.width || 0) * Number(a.height || 0) ||
-      Number(b.size || 0) - Number(a.size || 0)
-  );
-  return String(streams[0].m3u8_url).replace(/^http:\/\//i, 'https://');
-}
-
-async function play(b) {
-  const id = String(b.id || b.url || b.ids || '');
-  const playUrl = abs(id);
-  if (!playUrl || !/^https?:/i.test(playUrl)) return { parse: 1, url: playUrl };
-  if (/\.(m3u8|mp4)(\?|$)/i.test(playUrl)) return { parse: 0, url: playUrl, header: { 'User-Agent': UA } };
-  try {
-    const html = await get(playUrl, { headers: { Referer: HOST + '/' } });
-    const iframeMatch = /<iframe[^>]+src=["']([^"']+)["']/i.exec(html);
-    if (!iframeMatch) return { parse: 1, url: playUrl };
-    const iframe = abs(iframeMatch[1]);
-
-    const playerHtml = await get(iframe, { headers: { Referer: playUrl } });
-    const bootMatch = /__HHJX_BOOTSTRAP__\s*=\s*(\{[\s\S]*?\})\s*;/.exec(playerHtml);
-    if (!bootMatch) return { parse: 1, url: iframe };
-    let boot;
-    try {
-      boot = JSON.parse(bootMatch[1]);
-    } catch (e) {
-      return { parse: 1, url: iframe };
-    }
-
-    const origin = (/^https?:\/\/[^/]+/.exec(iframe) || [])[0];
-    if (!origin) return { parse: 1, url: iframe };
-    const body = JSON.stringify({ url: boot.url, t: boot.t, key: boot.key, client_fallback: false });
-    const raw = await get(origin + '/api/parse', {
-      method: 'POST',
-      headers: { Referer: iframe, Origin: origin, 'Content-Type': 'application/json' },
-      body,
-    });
-    let resp;
-    try {
-      resp = JSON.parse(raw);
-    } catch (e) {
-      return { parse: 1, url: iframe };
-    }
-    if (!resp || resp.code !== 200 || !resp.url) return { parse: 1, url: iframe };
-
-    const target = String(resp.url);
-    if (/^https?:\/\//i.test(target)) {
-      return { parse: 0, url: target.replace(/^http:\/\//i, 'https://'), header: { 'User-Agent': UA } };
-    }
-    const youku = await youkuLine(target);
-    if (youku) return { parse: 0, url: youku, header: { 'User-Agent': UA } };
-    return { parse: 1, url: iframe };
-  } catch (e) {
-    return { parse: 1, url: playUrl };
-  }
-}
-
+const allowed = (value) => {
+  const url = new URL(full(HOST, value));
+  if (url.origin !== HOST) throw new Error('Unexpected detail host');
+  return url.href;
+};
 export default function createSpider() {
   return {
   meta: { key: 'py_dongman_bashi', name: '🚌动漫 - 巴士', type: 3, searchable: 1, quickSearch: 0, filterable: 0 },
-  api: async (fastify) => {
+  api: async function (fastify) {
     fastify.post('/init', async () => ({}));
-    fastify.post('/home', async () => home());
-    fastify.post('/category', async (request) => category(request.body || {}));
-    fastify.post('/search', async (request) => search(request.body || {}));
-    fastify.post('/detail', async (request) => ({ list: await detail(request.body || {}) }));
-    fastify.post('/play', async (request) => play(request.body || {}));
-  },
+    fastify.post('/home', async () => ({ class: categories, filters: dmFilters }));
+    fastify.post('/category', async (request) => {
+      const id = one(request.body?.id), page = pageOf(request.body);
+      if (!categories.some((item) => item.type_id === id)) return listResult(page, []);
+      const filter = request.body?.extend || {};
+      const url = `${HOST}/show-${id}--${filter.by || ''}-${filter.class || ''}--${filter.year || ''}-${page > 1 ? page : ''}.html`;
+      return listResult(page, cards(await reqText(url)));
+    });
+    fastify.post('/search', async (request) => {
+      const wd = one(request.body?.wd).trim(), page = pageOf(request.body);
+      if (!wd) return listResult(page, []);
+      const url = page === 1 ? `${HOST}/s----------.html?wd=${encodeURIComponent(wd)}` : `${HOST}/s-${encodeURIComponent(wd)}---------${page}.html`;
+      return listResult(page, cards(await reqText(url)));
+    });
+    fastify.post('/detail', async (request) => {
+      const id = allowed(one(request.body?.id));
+      return detail(id, await reqText(id));
+    });
+    fastify.post('/play', async (request) => {
+      const id = one(request.body?.id);
+      const html = await reqText(allowed(id));
+      const iframe = (html.match(/<iframe\b[^>]*>/i) || [])[0] || '';
+      return { parse: 1, url: full(HOST, attr(iframe, 'src')) };
+    });
+  }
 };
 }
