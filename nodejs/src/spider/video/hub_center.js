@@ -3,17 +3,23 @@ import { HUB_WORKER_BASE } from '../../hub.js';
 const KEY = 'py_hub_center';
 const NAME = '⚙️配置·中枢';
 
-// 管理页地址 = HUB_WORKER_BASE + '/'；HUB_WORKER_BASE 为空表示尚未部署。
-function managerUrl() {
+// 管理页根地址（无尾斜杠）；HUB_WORKER_BASE 为空表示尚未部署。
+function baseUrl() {
     if (!HUB_WORKER_BASE) return '';
-    return String(HUB_WORKER_BASE).replace(/\/+$/, '') + '/';
+    return String(HUB_WORKER_BASE).replace(/\/+$/, '');
+}
+
+// 管理页地址 = baseUrl + '/'。
+function managerUrl() {
+    const b = baseUrl();
+    return b ? b + '/' : '';
 }
 
 // 已部署时详情封面为管理页二维码（Worker /qr?u= 生成）；未部署时留空。
 function qrUrl() {
     const url = managerUrl();
     if (!url) return '';
-    return String(HUB_WORKER_BASE).replace(/\/+$/, '') + '/qr?u=' + encodeURIComponent(url);
+    return baseUrl() + '/qr?u=' + encodeURIComponent(url);
 }
 
 function card() {
@@ -37,9 +43,11 @@ function detailContent() {
 
 async function init() { return {}; }
 
+// 与原版 baseset 一致：首页唯一分类的 type_name 就是管理页地址本身，
+// App 会把这行地址渲染成带 > 的可点行，点它直接在 App 内打开管理页。
 async function home() {
     return {
-        class: [{ type_name: '管理', type_id: 'hub' }],
+        class: [{ type_name: baseUrl() || '管理', type_id: 'setting' }],
         filters: {},
         list: [card()],
     };
