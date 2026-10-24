@@ -2,9 +2,19 @@ import guazi from './spider/video/guazi.js';
 import zhibo from './spider/video/zhibo.js';
 import jinpai from './spider/video/jinpai.js';
 import juzi from './spider/video/juzi.js';
+import aikanbot from './spider/video/aikanbot.js';
+import bt_two from './spider/video/bt_two.js';
+import duanju_bashi from './spider/video/duanju_bashi.js';
+import duanju_daquan from './spider/video/duanju_daquan.js';
+import hema_duanju from './spider/video/hema_duanju.js';
+import hongdou_duanju from './spider/video/hongdou_duanju.js';
+import huangguo_ai_local from './spider/video/huangguo_ai_local.js';
+import jisu_zhuiju from './spider/video/jisu_zhuiju.js';
+import rebo_fast from './spider/video/rebo_fast.js';
+import xin6v from './spider/video/xin6v.js';
 import { arrangeSites, PAN_SOURCES } from './hub.js';
 import createPanSpider from './spider/video/pan_hub.js';
-const spiders = [guazi, zhibo, jinpai, juzi];
+const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, huangguo_ai_local, jisu_zhuiju, rebo_fast, xin6v];
 // 网盘条目由中枢 PAN_SOURCES 驱动、通用蜘蛛承接；与视频源分开注册，
 // 但下发时同样过中枢（排序/开关）。PAN_SOURCES 为空时这里就是空数组。
 const panSpiders = PAN_SOURCES.map((entry) => createPanSpider(entry));
