@@ -126,9 +126,10 @@ export const ADULT_KEYS = ['py_huangguo_ai_local', 'py_duoju_local_node', 'py_hu
 
 /**
  * 读远端 Worker 配置（GET HUB_WORKER_BASE + '/api/config'）。
- * 成功返回归一化对象 { order, disabled, pan, hideAdult }，其中 pan 为 null
+ * 成功返回归一化对象 { order, disabled, pan, hideAdult, names }，其中 pan 为 null
  * 表示远端未给 pan 字段（不覆盖网盘），pan 为数组时表示全量网盘表
- * （远端省略的内置网盘 key 即删除、远端条目名覆盖下发名）。
+ * （远端省略的内置网盘 key 即删除、远端条目名覆盖下发名）；names 为源显示名
+ * 覆盖表（key → 自定义名，空对象表示无改名），形状不对时只忽略它。
  * 任一步失败（未部署、网络错、超时、坏 JSON、形状不对）都回 null，绝不抛错，
  * 调用方回落内置表。
  *
@@ -169,6 +170,18 @@ export async function fetchRemoteConfig(req) {
         if (data.hideAdult === undefined) hideAdult = false;
         else if (typeof data.hideAdult === 'boolean') hideAdult = data.hideAdult;
         else return null;
+        let names = {};
+        if (data.names !== undefined) {
+            if (data.names && typeof data.names === 'object' && !Array.isArray(data.names)) {
+                for (const [k, v] of Object.entries(data.names)) {
+                    if (typeof v === 'string') {
+                        const t = v.trim();
+                        if (t !== '') names[k] = t.slice(0, 30);
+                    }
+                }
+            }
+            // names 形状不对时只忽略它，不让整个远端配置失败
+        }
         let pan = null;
         if (data.pan !== undefined) {
             if (!Array.isArray(data.pan)) return null;
@@ -183,7 +196,7 @@ export async function fetchRemoteConfig(req) {
                 pan.push(Object.assign({}, entry));
             }
         }
-        return { order, disabled, pan, hideAdult };
+        return { order, disabled, pan, hideAdult, names };
     } catch (e) {
         return null;
     }
