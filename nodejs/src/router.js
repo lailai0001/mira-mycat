@@ -22,9 +22,19 @@ import nivod_fast from './spider/video/nivod_fast.js';
 import wencaiyingshi from './spider/video/wencaiyingshi.js';
 import yueting from './spider/video/yueting.js';
 import xingya_short from './spider/video/xingya_short.js';
+import asmrba from './spider/video/asmrba.js';
+import xingmeng_asmr from './spider/video/xingmeng_asmr.js';
+import ximalaya from './spider/video/ximalaya.js';
+import yidong_4k from './spider/video/yidong_4k.js';
+import juzi_4k from './spider/video/juzi_4k.js';
+import tiantian_4k from './spider/video/tiantian_4k.js';
+import chabeihu from './spider/video/chabeihu.js';
+import fengye4k from './spider/video/fengye4k.js';
+import gulu_4k from './spider/video/gulu_4k.js';
+import juxiafan_4k from './spider/video/juxiafan_4k.js';
 import { arrangeSites, PAN_SOURCES } from './hub.js';
 import createPanSpider from './spider/video/pan_hub.js';
-const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, huangguo_ai_local, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short];
+const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, huangguo_ai_local, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, asmrba, xingmeng_asmr, ximalaya, yidong_4k, juzi_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k];
 // 网盘条目由中枢 PAN_SOURCES 驱动、通用蜘蛛承接；与视频源分开注册，
 // 但下发时同样过中枢（排序/开关）。PAN_SOURCES 为空时这里就是空数组。
 const panSpiders = PAN_SOURCES.map((entry) => createPanSpider(entry));
