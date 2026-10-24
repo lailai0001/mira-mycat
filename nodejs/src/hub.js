@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------- 显示顺序
 // /config 的 sites 顺序只由这张表决定。表中没有的新 key 不会消失，
 // 兜底追加在末尾（防止新注册的站因漏填表而从配置里消失）。
-export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi', 'py_aikanbot', 'py_bt_two', 'py_duanju_bashi', 'py_duanju_daquan', 'py_hema_duanju', 'py_hongdou_duanju', 'py_huangguo_ai_local', 'py_jisu_zhuiju', 'py_rebo_fast', 'py_xin6v', 'py_duboku', 'py_duoduo_tv', 'py_hqvod4k', 'py_jianpian', 'py_kanju_ai', 'py_netflixgc', 'py_nivod_fast', 'py_wencaiyingshi', 'py_yueting', 'py_xingya_short', 'py_asmrba', 'py_xingmeng_asmr', 'py_ximalaya', 'py_yidong_4k', 'py_juzi_4k', 'py_tiantian_4k', 'py_chabeihu', 'py_fengye4k', 'py_gulu_4k', 'py_juxiafan_4k', 'py_douban_hot', 'py_dongman_bashi', 'py_dshixiong_tv', 'py_fenzhu', 'py_linglingqi', 'py_mengtaiqi', 'py_zhuijudaren', 'py_xiaoyouzi', 'py_duse91', 'py_duoju_local_node', 'py_netflix_cat', 'py_tencent_video', 'py_zhenpin_video', 'py_hudie_yingyuan', 'py_guazi_2k', 'py_duoduo_pan', 'py_muou_share', 'py_huajuan_pan', 'py_wanou_pan', 'py_pianku_pan', 'py_pomo_pan', 'py_shandian_tv', 'py_youtube_video'];
+export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi', 'py_aikanbot', 'py_bt_two', 'py_duanju_bashi', 'py_duanju_daquan', 'py_hema_duanju', 'py_hongdou_duanju', 'py_huangguo_ai_local', 'py_jisu_zhuiju', 'py_rebo_fast', 'py_xin6v', 'py_duboku', 'py_duoduo_tv', 'py_hqvod4k', 'py_jianpian', 'py_kanju_ai', 'py_netflixgc', 'py_nivod_fast', 'py_wencaiyingshi', 'py_yueting', 'py_xingya_short', 'py_asmrba', 'py_xingmeng_asmr', 'py_ximalaya', 'py_yidong_4k', 'py_juzi_4k', 'py_tiantian_4k', 'py_chabeihu', 'py_fengye4k', 'py_gulu_4k', 'py_juxiafan_4k', 'py_douban_hot', 'py_dongman_bashi', 'py_dshixiong_tv', 'py_fenzhu', 'py_linglingqi', 'py_mengtaiqi', 'py_zhuijudaren', 'py_xiaoyouzi', 'py_duse91', 'py_duoju_local_node', 'py_netflix_cat', 'py_tencent_video', 'py_zhenpin_video', 'py_hudie_yingyuan', 'py_guazi_2k', 'py_duoduo_pan', 'py_muou_share', 'py_huajuan_pan', 'py_wanou_pan', 'py_pianku_pan', 'py_pomo_pan', 'py_shandian_tv', 'py_youtube_video', 'py_hub_center'];
 
 // ---------------------------------------------------------------- 开关源
 // 把源的 meta.key 加进来，该源就不再下发到 /config；删掉这一项就恢复。
@@ -115,6 +115,80 @@ export const PAN_SOURCES = [
     },
 ];
 
+// ---------------------------------------------------------------- 远端配置
+// 第一阶段占位：步骤 4 填入已部署域名，形如
+// https://mycat-hub.xxx.workers.dev，不带末尾斜杠；
+// 为空表示未部署，跳过远端读取（/config 行为与现在完全一致）。
+export const HUB_WORKER_BASE = '';
+
+// 成人源 key（仅此 3 个）：远端配置 hideAdult=true 时并入 disabled 下发过滤。
+export const ADULT_KEYS = ['py_huangguo_ai_local', 'py_duoju_local_node', 'py_hudie_yingyuan'];
+
+/**
+ * 读远端 Worker 配置（GET HUB_WORKER_BASE + '/api/config'）。
+ * 成功返回归一化对象 { order, disabled, pan, hideAdult }，其中 pan 为 null
+ * 表示远端未给 pan 字段（不覆盖网盘），pan 为数组时表示全量网盘表
+ * （远端省略的内置网盘 key 即删除、远端条目名覆盖下发名）。
+ * 任一步失败（未部署、网络错、超时、坏 JSON、形状不对）都回 null，绝不抛错，
+ * 调用方回落内置表。
+ *
+ * @param {Object} req 框架请求实例（util/req.js 的 axios 形态，须有 req.get）
+ * @return {Promise<Object|null>}
+ */
+export async function fetchRemoteConfig(req) {
+    try {
+        if (!HUB_WORKER_BASE) return null;
+        const base = String(HUB_WORKER_BASE).replace(/\/+$/, '');
+        if (!base) return null;
+        if (!req || typeof req.get !== 'function') return null;
+        let timer = null;
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('remote config timeout')), 3000);
+        });
+        let res;
+        try {
+            res = await Promise.race([
+                req.get(base + '/api/config', { timeout: 3000, responseType: 'text' }),
+                timeout,
+            ]);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+        const raw = res && res.data !== undefined ? res.data : res;
+        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+        let order;
+        if (data.order === undefined) order = [];
+        else if (Array.isArray(data.order) && data.order.every((x) => typeof x === 'string')) order = data.order;
+        else return null;
+        let disabled;
+        if (data.disabled === undefined) disabled = [];
+        else if (Array.isArray(data.disabled) && data.disabled.every((x) => typeof x === 'string')) disabled = data.disabled;
+        else return null;
+        let hideAdult;
+        if (data.hideAdult === undefined) hideAdult = false;
+        else if (typeof data.hideAdult === 'boolean') hideAdult = data.hideAdult;
+        else return null;
+        let pan = null;
+        if (data.pan !== undefined) {
+            if (!Array.isArray(data.pan)) return null;
+            pan = [];
+            for (const entry of data.pan) {
+                if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+                if (typeof entry.key !== 'string' || !entry.key) return null;
+                if (entry.name !== undefined && typeof entry.name !== 'string') return null;
+                if (entry.hosts !== undefined && (!Array.isArray(entry.hosts) || !entry.hosts.every((h) => typeof h === 'string'))) return null;
+                if (entry.pattern !== undefined && typeof entry.pattern !== 'string') return null;
+                if (entry.classes !== undefined && !Array.isArray(entry.classes)) return null;
+                pan.push(Object.assign({}, entry));
+            }
+        }
+        return { order, disabled, pan, hideAdult };
+    } catch (e) {
+        return null;
+    }
+}
+
 /**
  * 按中枢整理待下发的 meta 列表（router.js 的 /config 每次请求都调它，
  * 所以改 SITE_ORDER / DISABLED 后不用重启服务，下次拉 /config 即生效；
@@ -124,21 +198,30 @@ export const PAN_SOURCES = [
  * @return {Array} 排序 + 过滤后的列表；SITE_ORDER 未列出的 key 兜底追加在末尾
  */
 export function arrangeSites(metas) {
+    return arrangeSitesWith(SITE_ORDER, DISABLED, metas);
+}
+
+/**
+ * arrangeSites 的通用版：用给定的 order / disabled 表整理（远端配置覆盖时用）。
+ * order 未列出的 key 兜底追加在末尾（与内置版行为一致）。
+ */
+export function arrangeSitesWith(order, disabled, metas) {
+    const disabledSet = disabled instanceof Set ? disabled : new Set(disabled || []);
     const byKey = new Map();
     for (const m of metas) {
         if (m && m.key && !byKey.has(m.key)) byKey.set(m.key, m);
     }
     const out = [];
     const used = new Set();
-    for (const k of SITE_ORDER) {
+    for (const k of order || []) {
         const m = byKey.get(k);
-        if (m && !DISABLED.has(k)) {
+        if (m && !disabledSet.has(k)) {
             out.push(m);
             used.add(k);
         }
     }
     for (const [k, m] of byKey) {
-        if (!used.has(k) && !DISABLED.has(k)) out.push(m);
+        if (!used.has(k) && !disabledSet.has(k)) out.push(m);
     }
     return out;
 }
