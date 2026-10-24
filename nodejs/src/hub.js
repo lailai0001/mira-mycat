@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------- 显示顺序
 // /config 的 sites 顺序只由这张表决定。表中没有的新 key 不会消失，
 // 兜底追加在末尾（防止新注册的站因漏填表而从配置里消失）。
-export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi'];
+export const SITE_ORDER = ['py_guazi', 'py_zhibo', 'py_jinpai', 'py_juzi', 'py_aikanbot', 'py_bt_two', 'py_duanju_bashi', 'py_duanju_daquan', 'py_hema_duanju', 'py_hongdou_duanju', 'py_huangguo_ai_local', 'py_jisu_zhuiju', 'py_rebo_fast', 'py_xin6v'];
 
 // ---------------------------------------------------------------- 开关源
 // 把源的 meta.key 加进来，该源就不再下发到 /config；删掉这一项就恢复。
