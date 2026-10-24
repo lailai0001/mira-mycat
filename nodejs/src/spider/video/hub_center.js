@@ -31,8 +31,8 @@ function card() {
     };
 }
 
-// 地址放第一行：本 App 的详情页无集时不显示描述、且划不动，
-// 必须带一个集才能让描述（含地址）显示出来；集本身不可点播，play 恒为空。
+// 详情只剩一张图片（二维码）+ 一行说明，不带任何可播集：
+// 既没有播放按钮可误触，也不会因空播放地址弹“视频信息获取失败”。
 function detailContent() {
     const url = managerUrl();
     if (!url) {
@@ -57,35 +57,39 @@ async function category(reqIn) {
     return { page, pagecount: 1, limit: 20, total: 1, list: [card()] };
 }
 
-// 点卡片进详情时，直接让 App 打开内置网页窗口（与其他猫源的配置源同款机制）：
+// 让 App 打开内置网页窗口（与其他猫源的配置源同款机制）：
 // 框架的 server.messageToDart({action:'openInternalWebview', opt:{url}}) 会把消息
-// 发给 App 内 Dart 侧的本地服务，由 App 打开内置 webview；与点地址行、点播放
-// 走的管线完全不同，远端地址也能打开。发消息失败时静默回落到普通详情
-// （二维码 + 地址文字），不影响详情页本身。
-async function detail(reqIn) {
+// 发给 App 内 Dart 侧的本地服务，由 App 打开内置 webview。
+// 发消息失败时静默回落，不影响返回结果。
+async function openManager(reqIn) {
     const url = managerUrl();
-    if (url) {
-        try {
-            const srv = reqIn && reqIn.server;
-            if (srv && typeof srv.messageToDart === 'function') {
-                await srv.messageToDart({ action: 'openInternalWebview', opt: { url } }, reqIn);
-            }
-        } catch (e) { /* ignore: fallback to normal detail */ }
-    }
+    if (!url) return;
+    try {
+        const srv = reqIn && reqIn.server;
+        if (srv && typeof srv.messageToDart === 'function') {
+            await srv.messageToDart({ action: 'openInternalWebview', opt: { url } }, reqIn);
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// 点卡片进详情即开管理页。
+async function detail(reqIn) {
+    await openManager(reqIn);
     return {
         list: [{
             vod_id: 'hub',
             vod_name: NAME,
             vod_pic: qrUrl(),
             vod_content: detailContent(),
-            vod_play_from: NAME,
-            vod_play_url: '⚠️别点我，点上方地址$hub',
         }],
     };
 }
 
-// 中枢没有可播视频，play 恒为空；原版 baseset 亦是如此。
-async function play() {
+// 中枢没有可播视频；但播放入口（旧详情残留的播放按钮、
+// “视频信息获取失败”后的重试）点进来也一律打开管理页，
+// 不再弹失败提示后无路可走。
+async function play(reqIn) {
+    await openManager(reqIn);
     return { parse: 0, url: '' };
 }
 
