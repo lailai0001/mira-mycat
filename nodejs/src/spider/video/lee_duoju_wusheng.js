@@ -52,7 +52,7 @@ async function detail(raw) {
 }
 export default function createSpider() {
   return {
-    meta: { key: 'lee_duoju_wusheng', name: '多聚短剧 · 无声', type: 3, searchable: 1, quickSearch: 1, filterable: 0 },
+    meta: { key: 'lee_duoju_wusheng', name: '多聚短剧 · 悟圣', type: 3, searchable: 1, quickSearch: 1, filterable: 0 },
     api: async (fastify) => {
       fastify.post('/init', async () => ({}));
       fastify.post('/home', async () => ({ class: categories.map(([type_id, type_name]) => ({ type_id, type_name })), list: (await listing('1287', 1)).list }));
