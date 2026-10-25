@@ -214,7 +214,7 @@ export function createPanSpider(entry) {
     }
 
     return {
-        meta: { key, name, type: 40 },
+        meta: { key, name, type: 3 },
         api: async (fastify) => {
             fastify.post('/init', async () => ({}));
             fastify.post('/home', async () => ({ class: classes, filters: {}, list: [] }));
