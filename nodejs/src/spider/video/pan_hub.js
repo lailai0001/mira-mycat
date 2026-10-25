@@ -646,6 +646,19 @@ export function createPanSpider(entry) {
                     byProvider.get(pv).push(u);
                 }
                 const providers = [...byProvider.keys()];
+                // 去重 + 限流（参考猫源模式）：同一厂商的重复分享只展开一次，
+                // 每厂商最多展开 3 条分享，避免几十条分享把详情拖垮。
+                for (const pv of providers) {
+                    const seen = new Set();
+                    const uniq = [];
+                    for (const u of byProvider.get(pv)) {
+                        if (seen.has(u)) continue;
+                        seen.add(u);
+                        uniq.push(u);
+                        if (uniq.length >= 3) break;
+                    }
+                    byProvider.set(pv, uniq);
+                }
                 vod.vod_play_from = providers.join('$$$');
                 // 文件夹展开：百度/夸克分享若能列出文件，就把文件列成选集
                 // （优先中枢 Worker 展开：Worker 版百度选集的播放 id 是 baiduplay:

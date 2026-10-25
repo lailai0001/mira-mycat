@@ -1,4 +1,3 @@
-import guazi from './spider/video/guazi.js';
 import zhibo from './spider/video/zhibo.js';
 import jinpai from './spider/video/jinpai.js';
 import juzi from './spider/video/juzi.js';
@@ -23,7 +22,6 @@ import yueting from './spider/video/yueting.js';
 import xingya_short from './spider/video/xingya_short.js';
 import ximalaya from './spider/video/ximalaya.js';
 import yidong_4k from './spider/video/yidong_4k.js';
-import juzi_4k from './spider/video/juzi_4k.js';
 import tiantian_4k from './spider/video/tiantian_4k.js';
 import chabeihu from './spider/video/chabeihu.js';
 import fengye4k from './spider/video/fengye4k.js';
@@ -48,7 +46,6 @@ import hub_center from './spider/video/hub_center.js';
 import lee_iqiyi from './spider/video/lee_iqiyi.js';
 import lee_mgtv from './spider/video/lee_mgtv.js';
 import lee_sp360 from './spider/video/lee_sp360.js';
-import lee_4kmp from './spider/video/lee_4kmp.js';
 import lee_4k_yingshi from './spider/video/lee_4k_yingshi.js';
 import lee_juzi4k from './spider/video/lee_juzi4k.js';
 import lee_hetun4k from './spider/video/lee_hetun4k.js';
@@ -58,10 +55,8 @@ import lee_quanju_xingxing from './spider/video/lee_quanju_xingxing.js';
 import lee_quanju_weiguan from './spider/video/lee_quanju_weiguan.js';
 import lee_duoju_kuwo from './spider/video/lee_duoju_kuwo.js';
 import lee_duoju_damang from './spider/video/lee_duoju_damang.js';
-import lee_duoju_haokan from './spider/video/lee_duoju_haokan.js';
 import lee_quanju_haokan from './spider/video/lee_quanju_haokan.js';
 import lee_quanju_baidu from './spider/video/lee_quanju_baidu.js';
-import lee_quanju_xingya from './spider/video/lee_quanju_xingya.js';
 import lee_zhenguo_yaguo from './spider/video/lee_zhenguo_yaguo.js';
 import lee_quanju_hema from './spider/video/lee_quanju_hema.js';
 import lee_quanju_xifan from './spider/video/lee_quanju_xifan.js';
@@ -77,7 +72,7 @@ import lee_junior_school from './spider/video/lee_junior_school.js';
 import { arrangeSites, arrangeSitesWith, PAN_SOURCES, SITE_ORDER, fetchRemoteConfig, ADULT_KEYS, HUB_WORKER_BASE } from './hub.js';
 import req from './util/req.js';
 import createPanSpider from './spider/video/pan_hub.js';
-const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, ximalaya, yidong_4k, juzi_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k, douban_hot, dongman_bashi, dshixiong_tv, fenzhu, linglingqi, mengtaiqi, zhuijudaren, xiaoyouzi, duse91, duoju_local_node, netflix_cat, tencent_video, zhenpin_video, guazi_2k, youtube_video, hub_center, lee_iqiyi, lee_mgtv, lee_sp360, lee_4kmp, lee_4k_yingshi, lee_juzi4k, lee_hetun4k, lee_duoju_wusheng, lee_zhenguo_xingguo, lee_quanju_xingxing, lee_quanju_weiguan, lee_duoju_kuwo, lee_duoju_damang, lee_duoju_haokan, lee_quanju_haokan, lee_quanju_baidu, lee_quanju_xingya, lee_zhenguo_yaguo, lee_quanju_hema, lee_quanju_xifan, lee_zhenguo_fanguo, lee_quanju_qimao, lee_quanju_shanhai, lee_quanju_yimi, lee_quanju_xifu, lee_quanju_niuniu, lee_duoju_qixing, lee_duoju_souju, lee_junior_school];
+const spiders = [zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, ximalaya, yidong_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k, douban_hot, dongman_bashi, dshixiong_tv, fenzhu, linglingqi, mengtaiqi, zhuijudaren, xiaoyouzi, duse91, duoju_local_node, netflix_cat, tencent_video, zhenpin_video, guazi_2k, youtube_video, hub_center, lee_iqiyi, lee_mgtv, lee_sp360, lee_4k_yingshi, lee_juzi4k, lee_hetun4k, lee_duoju_wusheng, lee_zhenguo_xingguo, lee_quanju_xingxing, lee_quanju_weiguan, lee_duoju_kuwo, lee_duoju_damang, lee_quanju_haokan, lee_quanju_baidu, lee_zhenguo_yaguo, lee_quanju_hema, lee_quanju_xifan, lee_zhenguo_fanguo, lee_quanju_qimao, lee_quanju_shanhai, lee_quanju_yimi, lee_quanju_xifu, lee_quanju_niuniu, lee_duoju_qixing, lee_duoju_souju, lee_junior_school];
 // 网盘条目由中枢 PAN_SOURCES 驱动、通用蜘蛛承接；与视频源分开注册，
 // 但下发时同样过中枢（排序/开关）。PAN_SOURCES 为空时这里就是空数组。
 // 注意：panSpiders 不再是模块级常量，见 router() 内的异步初始化：
