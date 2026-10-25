@@ -184,6 +184,26 @@ function parseDetail(html, host, id, fallbackName, maxLinks) {
     };
 }
 
+
+// 分享链接按域名归属网盘商：详情按网盘商分线路（vod_play_from），
+// App 播放页就会出现夸克/百度/迅雷/UC 这样的线路选择（与多网盘源同款），
+// 而不是所有分享挤在一条“网盘分享”线路下。
+function panProvider(url) {
+    let host = '';
+    try { host = new URL(url).hostname.toLowerCase(); } catch (e) { host = ''; }
+    if (host.includes('quark')) return '夸克';
+    if (host.includes('uc.cn')) return 'UC';
+    if (host.includes('baidu')) return '百度';
+    if (host.includes('115')) return '115';
+    if (host.includes('aliyundrive') || host.includes('alipan')) return '阿里云盘';
+    if (host.includes('189.cn')) return '天翼云盘';
+    if (host.includes('139.com')) return '移动云盘';
+    if (host.includes('xunlei')) return '迅雷';
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) return parts[parts.length - 2];
+    return '网盘';
+}
+
 export function createPanSpider(entry) {
     const cfg = entry || {};
     const key = cfg.key || 'py_pan_hub';
@@ -255,8 +275,17 @@ export function createPanSpider(entry) {
                     vod.vod_remarks = '详情页没抓到网盘链接';
                     return { list: [vod] };
                 }
-                vod.vod_play_from = '网盘分享';
-                vod.vod_play_url = parsed.links.map((u, i) => `分享${i + 1}$${u}`).join('#');
+                const byProvider = new Map();
+                for (const u of parsed.links) {
+                    const pv = panProvider(u);
+                    if (!byProvider.has(pv)) byProvider.set(pv, []);
+                    byProvider.get(pv).push(u);
+                }
+                const providers = [...byProvider.keys()];
+                vod.vod_play_from = providers.join('$$$');
+                vod.vod_play_url = providers
+                    .map((pv) => byProvider.get(pv).map((u, i) => `分享${i + 1}$${u}`).join('#'))
+                    .join('$$$');
                 vod.vod_remarks = parsed.links.length + ' 个网盘';
                 return { list: [vod] };
             });
