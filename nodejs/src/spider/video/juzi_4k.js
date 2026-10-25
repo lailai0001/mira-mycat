@@ -73,8 +73,8 @@ async function detail(b){const vid=ID(b),r=await proto('/api/proto/v5/drama/getD
  for(let i=0;i<r.data.length-3;i++){if(r.data[i]!==0xea||r.data[i+1]!==0x01)continue;let len,pos;try{[len,pos]=readv(r.data,i+2)}catch{continue}if(len<1||pos+len>r.data.length)continue;const e=safePb(r.data.subarray(pos,pos+len));i=pos+len-1;let path=ps(e,4),title=ps(e,2)||ps(e,3)||'正片',src=ps(e,9),line=ps(e,10)||src||'正片';if(!path)continue;title=title.replace(/^第?0*(\d{1,4})[集话期](?:完结)?$/,'$1');const pid=isMedia(path)?path:b64(JSON.stringify({vodPlayFrom:src,playUrl:path}));(lines[line]??=[]).push(title.replace(/[$#]/g,' ')+'$'+pid)}const order=Object.keys(lines).sort((a,b)=>score(b)-score(a));return{list:[{vod_id:vid,vod_name:ps(f,9),vod_pic:'',vod_remarks:ps(f,26)||ps(f,13),vod_area:ps(f,1),vod_actor:ps(f,25),vod_content:ps(f,6),vod_play_from:order.join('$$$'),vod_play_url:order.map(x=>lines[x].join('#')).join('$$$')}]}}
 async function play(b){const raw=ID(b);if(isMedia(raw)||/^https?:/.test(raw))return{parse:0,url:raw,header:headUA};let d;try{d=JSON.parse(unb64(raw).toString())}catch{return{parse:0,url:''}}const r=await proto('/api/proto/v5/videoUsableUrl',`vodPlayFrom=${d.vodPlayFrom||''}&playUrl=${d.playUrl||''}`),url=ps(safePb(r.data),1);return{parse:isMedia(url)?0:1,url,header:headUA}}
 export default function createSpider() {
-  const s = modulePlugin({key:'juzi_4k',name:'橘汁4K',filterable:1},{init:async()=>({}),home:async()=>{const c=await cats();return{class:c,filters:{},list:(await category({id:c[0].type_id,page:1})).list}},category,search,detail,play});
+  const s = modulePlugin({key:'juzi_4k',name:'橘汁2',filterable:1},{init:async()=>({}),home:async()=>{const c=await cats();return{class:c,filters:{},list:(await category({id:c[0].type_id,page:1})).list}},category,search,detail,play});
   s.meta.key = 'py_juzi_4k';
-  s.meta.name = '🧃橘汁 - 4K';
+  s.meta.name = '橘汁2';
   return s;
 }
