@@ -16,12 +16,19 @@ import req from '../../util/req.js';
  *   （轮播/站标/剧照都要扣分）、详情还有磁力线路；它的卡片解析约 200 行，
  *   塞进通用蜘蛛就等于把通用蜘蛛写成 pomo 专属蜘蛛，违背「通用」本意。
  *
- * 播放说明（诚实边界）：猫源运行时没有 hmtv 的 pan.js 解析层（那个是
- *   Node fs/db/cookie 引擎，猫源蜘蛛禁 fs，装不上），所以详情出线方式与
- *   bundle 在「无 pan 层」时的兜底完全一致：每条分享各占一集
- *   （分享1$<分享地址>#分享2$…），/play 原样透传（{ parse: 0, url: id }）。
- *   也就是说：home/分类/详情/播放接口全通、分享链接真实出线，但 App 内
- *   直播还需网盘解析层，那是本文件之外的缺口，待真机/后续再定。
+ * 播放说明（诚实边界，2026-10-25 修订）：分享页地址本身不是可播流，
+ *   以前 /play 原样透传 { parse: 0, url: 分享地址 } 会让播放器把分享页
+ *   HTML 当视频探流，必然报“视频信息获取失败”。现改为：分享地址不再
+ *   声明 parse: 0（不带 parse 交给播放器自己的网盘解析层，用用户在
+ *   App 网盘设置里登好的凭证去解）；夸克文件能拿到直链时才返回
+ *   { parse: 0, url: 直链 }。详情侧：百度分享会尝试展开文件夹（见
+ *   expandBaiduShare，verify + sekey 列目录 API，VM 与真机均实测通
+ *   过嫁金钗一案），把文件夹里的视频文件列成选集；夸克分享同样尝试
+ *   展开（token/detail/download 三段，文档化接口，真机网络为准，
+ *   任一步失败都回落到原分享链接，不破坏原有出线）。百度文件级精
+ *   准播放（点第 5 集就播第 5 集）仍缺直链：百度直链要 sign，匿名
+ *   分享在新版分享页里不暴露 sign，蜘蛛侧拿不到，只能靠播放器自
+ *   带百度模块去解分享地址；夸克文件是直链，点哪集播哪集。
  *   无参调用只用于 scripts/check-spiders.mjs 的形态校验，返回一个
  *   不对应任何真实站点的空实例，router 永远不注册它；真实网盘站一律
  *   由 hub.js 的 PAN_SOURCES 传参实例化。
@@ -170,7 +177,15 @@ function parseDetail(html, host, id, fallbackName, maxLinks) {
     const re = new RegExp(PAN_RE.source, 'gi');
     let m;
     while ((m = re.exec(text))) {
-        const url = String(m[0]).replace(/[)）,，。;；]+$/, '');
+        let url = String(m[0]).replace(/[)）,，。;；]+$/, '');
+        // 提取码常写在链接附近的文字里（不在 URL 参数里），尤其夸克：
+        // 附近 400 字内找“提取码/密码/pwd + 4 位码”，拼到 URL 上供后续
+        // verify（百度）与 token（夸克）使用；找不到则保持原样。
+        if (!/[?&](?:pwd|password)=/i.test(url)) {
+            const near = text.slice(Math.max(0, m.index - 150), m.index + 400);
+            const pm = /(?:提取码|密码|pwd|passcode)[：:\s]*([A-Za-z0-9]{4})/i.exec(near);
+            if (pm) url += (url.includes('?') ? '&' : '?') + 'pwd=' + pm[1];
+        }
         const bare = url.split('?')[0];
         const pwd = (/[?&](?:pwd|password)=([^&#\s]+)/i.exec(url) || [])[1] || '';
         const prev = map.get(bare);
@@ -202,6 +217,247 @@ function panProvider(url) {
     const parts = host.split('.').filter(Boolean);
     if (parts.length >= 2) return parts[parts.length - 2];
     return '网盘';
+}
+
+// ---- 网盘文件夹展开与直链（2026-10-25） ----
+// 选集名里绝不能出现 $ 或 #（vod_play_url 用这两个字符切分），统一清洗。
+function sanitizeEpName(s) {
+    return String(s == null ? '' : s).replace(/[$#\r\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || '未命名';
+}
+
+const VIDEO_EXT = /\.(mp4|mkv|avi|mov|rmvb|flv|wmv|ts|m2ts|webm|m4v)$/i;
+function isVideoFile(name) {
+    return VIDEO_EXT.test(String(name || '').trim());
+}
+function stripVideoExt(name) {
+    return String(name || '').replace(VIDEO_EXT, '').trim();
+}
+
+// 带响应头返回的 GET/POST（百度 verify 要读 Set-Cookie 里的 BDCLND；
+// App 内 req 是框架 axios，resp.headers 可读；fetch 兜底无头信息）。
+async function fetchRaw(url, headers, method, body) {
+    const h = headers || {};
+    try {
+        const resp = method === 'POST'
+            ? await req.post(url, body == null ? '' : body, { headers: h, timeout: 15000, responseType: 'text' })
+            : await req.get(url, { headers: h, timeout: 15000, responseType: 'text' });
+        const d = resp && resp.data;
+        return { text: typeof d === 'string' ? d : '', headers: (resp && resp.headers) || {} };
+    } catch (e) {
+        // 落入 fetch 兜底（仅 VM 环境，App 内 typeof fetch 为 undefined）
+    }
+    try {
+        if (typeof fetch === 'undefined') return { text: '', headers: {} };
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 15000);
+        try {
+            const opt = { headers: h, signal: ctrl.signal };
+            if (method === 'POST') { opt.method = 'POST'; opt.body = body == null ? '' : body; }
+            const r = await fetch(url, opt);
+            return { text: await r.text(), headers: {} };
+        } finally {
+            clearTimeout(timer);
+        }
+    } catch (e) {
+        return { text: '', headers: {} };
+    }
+}
+
+function getCookie(headers, name) {
+    try {
+        const hs = headers || {};
+        let raw = '';
+        for (const k of Object.keys(hs)) {
+            if (k.toLowerCase() === 'set-cookie') {
+                const v = hs[k];
+                raw += (Array.isArray(v) ? v.join('; ') : String(v)) + '; ';
+            }
+        }
+        const m = new RegExp(name + '=([^;]+)').exec(raw);
+        return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+async function fetchJson(method, url, data, headers) {
+    const h = headers || {};
+    try {
+        const resp = method === 'POST'
+            ? await req.post(url, data, { headers: h, timeout: 15000 })
+            : await req.get(url, { headers: h, timeout: 15000 });
+        const d = resp && resp.data;
+        if (d && typeof d === 'object') return d;
+        if (typeof d === 'string' && d) {
+            try { return JSON.parse(d); } catch (e) { return null; }
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// ---- 百度分享文件夹展开 ----
+// 流程（嫁金钗一案 VM 实测）：分享页 302 到 /share/init（yunData 含
+// shareid/share_uk）→ POST /share/verify（pwd）得 randsk（= sekey，
+// 同时是 BDCLND）→ 带 BDCLND 再 GET 分享页，locals-data 的 file_list
+// 是根目录 → 子文件夹用 GET /share/list（sekey + 完整 dir 路径）列目录。
+// 注意：dir 必须是完整路径（/sharelink<uk>-<fsid>/文件夹），只传文件夹
+// 名会 errno 2；sign 在新版页里不存在，列目录不用 sign，用 sekey。
+function parseBaiduLocals(text) {
+    try {
+        const m = /<script id="locals-data"[^>]*>\s*(\{[\s\S]*?\})\s*<\/script>/i.exec(String(text || ''));
+        if (!m) return null;
+        const d = JSON.parse(m[1]);
+        if (!d || !Array.isArray(d.file_list)) return null;
+        return d;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function baiduListDir(shareid, shareUk, sekey, cookie, dirPath) {
+    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+    const q = 'uk=' + encodeURIComponent(shareUk) + '&shareid=' + encodeURIComponent(shareid)
+        + '&sekey=' + encodeURIComponent(sekey || '')
+        + '&dir=' + encodeURIComponent(dirPath)
+        + '&page=1&num=1000&order=name&desc=0&showempty=0&view_mode=1&web=1';
+    const headers = { 'User-Agent': UA, Referer: 'https://pan.baidu.com/s/1' };
+    if (cookie) headers.Cookie = cookie;
+    const r = await fetchJson('GET', 'https://pan.baidu.com/share/list?' + q, null, headers);
+    if (!r || Number(r.errno) !== 0 || !Array.isArray(r.list)) return null;
+    return r.list;
+}
+
+// 返回 [{ name, fs_id, path }]（name 已去扩展名、已拼子文件夹前缀），
+// 任一步失败返回 null（调用方回落到原分享链接）。
+async function expandBaiduShare(shareUrl) {
+    try {
+        const m = /pan\.baidu\.com\/s\/([A-Za-z0-9_\-]+)/i.exec(String(shareUrl || ''));
+        if (!m) return null;
+        const surl = m[1];
+        const pwd = (/[?&](?:pwd|password)=([^&#\s]+)/i.exec(shareUrl) || [])[1] || '';
+        const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+        const first = await fetchRaw('https://pan.baidu.com/s/' + surl + (pwd ? '?pwd=' + encodeURIComponent(pwd) : ''), { 'User-Agent': UA });
+        if (!first.text) return null;
+        let locals = parseBaiduLocals(first.text);
+        let shareid = (locals && locals.shareid) ? String(locals.shareid) : '';
+        let shareUk = (locals && locals.share_uk) ? String(locals.share_uk) : '';
+        let sekey = '';
+        let cookie = '';
+        if (!locals) {
+            // 带提取码的分享：先 verify 拿 randsk 再取分享页。
+            if (!pwd) return null;
+            shareid = shareid || ((/shareid\s*[:=]\s*"?(\d+)/i.exec(first.text) || [])[1] || '');
+            shareUk = shareUk || ((/share_uk\s*[:=]\s*"?(\d+)/i.exec(first.text) || [])[1] || '');
+            if (!shareid || !shareUk) return null;
+            const vres = await fetchRaw('https://pan.baidu.com/share/verify?shareid=' + shareid + '&uk=' + shareUk,
+                { 'User-Agent': UA, Referer: 'https://pan.baidu.com/share/init?surl=' + surl, 'Content-Type': 'application/x-www-form-urlencoded' },
+                'POST', 'pwd=' + encodeURIComponent(pwd) + '&vcode=&vcode_str=');
+            let randsk = '';
+            try {
+                const vj = JSON.parse(vres.text || '{}');
+                if (vj && Number(vj.errno) === 0 && vj.randsk) randsk = decodeURIComponent(String(vj.randsk));
+            } catch (e) { /* ignore */ }
+            if (!randsk) randsk = getCookie(vres.headers, 'BDCLND');
+            if (!randsk) return null;
+            sekey = randsk;
+            cookie = 'BDCLND=' + encodeURIComponent(randsk);
+            const sp = await fetchRaw('https://pan.baidu.com/s/' + surl, { 'User-Agent': UA, Cookie: cookie });
+            locals = parseBaiduLocals(sp.text || '');
+            if (!locals) return null;
+            shareid = String(locals.shareid || shareid);
+            shareUk = String(locals.share_uk || shareUk);
+        }
+        // 根目录只有一个文件夹时它是分享本身的包装（嫁金钗的“叫金钗2026
+        // 臻彩”），先拆开它，免得每集都重复带这个前缀。
+        let rootEntries = locals.file_list || [];
+        if (rootEntries.length === 1 && Number(rootEntries[0].isdir) === 1 && rootEntries[0].path) {
+            const inner = await baiduListDir(shareid, shareUk, sekey, cookie, rootEntries[0].path);
+            if (inner) rootEntries = inner;
+        }
+        const files = [];
+        async function walk(entries, prefix, depth) {
+            for (const e of entries) {
+                if (files.length >= 200) return;
+                const nm = e.server_filename || '';
+                if (!nm) continue;
+                if (Number(e.isdir) === 1) {
+                    if (depth >= 3 || !e.path) continue;
+                    const sub = await baiduListDir(shareid, shareUk, sekey, cookie, e.path);
+                    if (sub) await walk(sub, prefix ? prefix + ' ' + nm : nm, depth + 1);
+                } else if (Number(e.category) === 1 || isVideoFile(nm)) {
+                    files.push({ name: (prefix ? prefix + ' ' : '') + stripVideoExt(nm), fs_id: e.fs_id, path: e.path });
+                }
+            }
+        }
+        await walk(rootEntries, '', 0);
+        return files.length ? files : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// ---- 夸克分享文件夹展开与直链（文档化接口，真机网络为准） ----
+const QUARK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+
+async function quarkToken(pwd_id, passcode) {
+    const r = await fetchJson('POST', 'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token',
+        { pwd_id, passcode: passcode || '' },
+        { 'Content-Type': 'application/json', Referer: 'https://pan.quark.cn/s/' + pwd_id, 'User-Agent': QUARK_UA });
+    const st = r && r.data && r.data.stoken;
+    return st || null;
+}
+
+async function quarkList(pwd_id, stoken, pdir_fid) {
+    const r = await fetchJson('POST', 'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail',
+        { pwd_id, stoken, pdir_fid, _page: 1, _size: 100, _sort: 'file_type:asc,updated_at:desc' },
+        { 'Content-Type': 'application/json', Referer: 'https://pan.quark.cn/s/' + pwd_id, 'User-Agent': QUARK_UA });
+    const list = r && r.data && r.data.list;
+    return Array.isArray(list) ? list : null;
+}
+
+async function quarkDownload(pwd_id, stoken, fid) {
+    const r = await fetchJson('POST', 'https://drive-pc.quark.cn/1/clouddrive/file/download',
+        { fids: [fid], pwd_id, stoken },
+        { 'Content-Type': 'application/json', Referer: 'https://pan.quark.cn/s/' + pwd_id, 'User-Agent': QUARK_UA });
+    const d = r && r.data;
+    if (Array.isArray(d) && d[0] && d[0].download_url) return d[0].download_url;
+    if (d && d.download_url) return d.download_url;
+    return null;
+}
+
+// 返回 [{ name, pwd_id, passcode, fid }]，任一步失败返回 null。
+async function expandQuarkShare(shareUrl) {
+    try {
+        const m = /pan\.quark\.cn\/s\/([A-Za-z0-9]+)/i.exec(String(shareUrl || ''));
+        if (!m) return null;
+        const pwd_id = m[1];
+        const passcode = (/[?&](?:pwd|password)=([^&#\s]+)/i.exec(shareUrl) || [])[1] || '';
+        const stoken = await quarkToken(pwd_id, passcode);
+        if (!stoken) return null;
+        const files = [];
+        async function walk(pdir_fid, prefix, depth) {
+            const list = await quarkList(pwd_id, stoken, pdir_fid);
+            if (!list) return;
+            for (const e of list) {
+                if (files.length >= 200) return;
+                const nm = e.file_name || '';
+                if (!nm) continue;
+                const isDir = e.dir === true || e.dir === 1;
+                if (isDir) {
+                    if (depth >= 3) continue;
+                    await walk(e.fid, prefix ? prefix + ' ' + nm : nm, depth + 1);
+                } else if (isVideoFile(nm)) {
+                    files.push({ name: (prefix ? prefix + ' ' : '') + stripVideoExt(nm), pwd_id, passcode, fid: e.fid });
+                }
+            }
+        }
+        await walk(0, '', 0);
+        return files.length ? files : null;
+    } catch (e) {
+        return null;
+    }
 }
 
 export function createPanSpider(entry) {
@@ -283,16 +539,59 @@ export function createPanSpider(entry) {
                 }
                 const providers = [...byProvider.keys()];
                 vod.vod_play_from = providers.join('$$$');
-                vod.vod_play_url = providers
-                    .map((pv) => byProvider.get(pv).map((u, i) => `分享${i + 1}$${u}`).join('#'))
-                    .join('$$$');
+                // 文件夹展开：百度/夸克分享若能列出文件，就把文件列成选集
+                // （夸克选集的播放 id 是 quark: 令牌，/play 再换直链；百度
+                // 选集的播放 id 仍是分享地址——百度文件直链拿不到，靠播放
+                // 器自带百度模块去解）。展开失败时回落到原来的“分享N”。
+                const epGroups = [];
+                for (const pv of providers) {
+                    const eps = [];
+                    let shareIdx = 0;
+                    for (const u of byProvider.get(pv)) {
+                        shareIdx++;
+                        let expanded = null;
+                        if (pv === '百度') expanded = await expandBaiduShare(u);
+                        else if (pv === '夸克') expanded = await expandQuarkShare(u);
+                        if (expanded && expanded.length) {
+                            for (const f of expanded) {
+                                const nm = sanitizeEpName(f.name);
+                                if (pv === '夸克') eps.push(`${nm}$quark:${f.pwd_id}:${f.passcode}:${f.fid}`);
+                                else eps.push(`${nm}$${u}`);
+                            }
+                        } else {
+                            eps.push(`分享${shareIdx}$${u}`);
+                        }
+                    }
+                    epGroups.push(eps.join('#'));
+                }
+                vod.vod_play_url = epGroups.join('$$$');
                 vod.vod_remarks = parsed.links.length + ' 个网盘';
                 return { list: [vod] };
             });
             fastify.post('/play', async (request) => {
                 const id = String((request && request.body && request.body.id) || '');
                 if (!id) return { parse: 0, url: '' };
-                return { parse: 0, url: id };
+                // 夸克文件：现取 token 再换直链（直链才配 parse: 0）。
+                if (id.startsWith('quark:')) {
+                    const parts = id.split(':');
+                    const pwd_id = parts[1] || '';
+                    const passcode = parts[2] || '';
+                    const fid = parts[3] || '';
+                    if (pwd_id && fid) {
+                        const stoken = await quarkToken(pwd_id, passcode);
+                        if (stoken) {
+                            const durl = await quarkDownload(pwd_id, stoken, fid);
+                            if (durl) return { parse: 0, url: durl };
+                        }
+                        // 直链失败时回落到分享页，不带 parse，交给播放器
+                        // 自带网盘模块去解（不要 parse: 0 直播 HTML）。
+                        return { url: 'https://pan.quark.cn/s/' + pwd_id };
+                    }
+                    return { url: id };
+                }
+                // 分享页地址不是可播流：不声明 parse: 0，交给播放器自己
+                // 的网盘解析层（用户在 App 网盘设置里登好的凭证）去解。
+                return { url: id };
             });
         },
     };
