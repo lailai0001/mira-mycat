@@ -312,12 +312,13 @@ function collectAllCookies() {
     return out.join('; ');
 }
 
-async function fetchJson(method, url, data, headers) {
+async function fetchJson(method, url, data, headers, timeoutMs) {
     const h = headers || {};
+    const to = timeoutMs || 15000;
     try {
         const resp = method === 'POST'
-            ? await req.post(url, data, { headers: h, timeout: 15000 })
-            : await req.get(url, { headers: h, timeout: 15000 });
+            ? await req.post(url, data, { headers: h, timeout: to })
+            : await req.get(url, { headers: h, timeout: to });
         const d = resp && resp.data;
         if (d && typeof d === 'object') return d;
         if (typeof d === 'string' && d) {
@@ -498,9 +499,12 @@ async function quarkToken(pwd_id, passcode) {
 }
 
 async function quarkList(pwd_id, stoken, pdir_fid) {
-    const r = await fetchJson('POST', 'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail',
-        { pwd_id, stoken, pdir_fid, _page: 1, _size: 100, _sort: 'file_type:asc,updated_at:desc' },
-        { 'Content-Type': 'application/json', Referer: 'https://pan.quark.cn/s/' + pwd_id, 'User-Agent': QUARK_UA });
+    // 注意：detail 接口只接受 GET，POST 回 405（2026-10-25 实测）；
+    // 旧代码用 POST，本地夸克展开因此恒失败。GET 形式与中枢 Worker 一致。
+    const q = 'pr=ucpro&fr=pc&pwd_id=' + encodeURIComponent(pwd_id) + '&stoken=' + encodeURIComponent(stoken)
+        + '&pdir_fid=' + encodeURIComponent(pdir_fid) + '&force=0&_page=1&_size=100&_sort=file_type%3Aasc%2Cupdated_at%3Adesc';
+    const r = await fetchJson('GET', 'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail?' + q,
+        null, { Referer: 'https://pan.quark.cn/s/' + pwd_id, 'User-Agent': QUARK_UA });
     const list = r && r.data && r.data.list;
     return Array.isArray(list) ? list : null;
 }
@@ -563,11 +567,12 @@ export function createPanSpider(entry) {
     const workerBase = String(cfg.workerBase || '').replace(/\/+$/, '');
 
     // 中枢服务端展开：GET /api/pan/expand?url=，返回 { ok, provider, files: [{ name, play }] }。
-    // 百度 play 为分享地址（靠播放器自带百度模块解），夸克 play 为 qfile: 令牌（/play 再换直链）。
+    // 百度 play 为 baiduplay: 令牌（/play 经中枢换直链，失败回落分享地址走模块），
+    // 夸克 play 为 qfile: 令牌（/play 经中枢换直链）。百度展开约 12 秒，超时放宽到 30 秒。
     async function expandViaWorker(shareUrl) {
         if (!workerBase) return null;
         try {
-            const r = await fetchJson('GET', workerBase + '/api/pan/expand?url=' + encodeURIComponent(shareUrl), null, {});
+            const r = await fetchJson('GET', workerBase + '/api/pan/expand?url=' + encodeURIComponent(shareUrl), null, {}, 30000);
             if (r && r.ok && Array.isArray(r.files) && r.files.length) return r.files;
         } catch (e) {}
         return null;
@@ -643,23 +648,33 @@ export function createPanSpider(entry) {
                 const providers = [...byProvider.keys()];
                 vod.vod_play_from = providers.join('$$$');
                 // 文件夹展开：百度/夸克分享若能列出文件，就把文件列成选集
-                // （优先中枢 Worker 展开：Worker 版夸克选集的播放 id 是 qfile:
-                // 令牌，/play 经中枢换直链；本地版夸克选集是 quark: 令牌，
-                // /play 本地换直链；百度选集的播放 id 仍是分享地址——百度
-                // 文件直链拿不到，靠播放器自带百度模块去解）。展开失败时
+                // （优先中枢 Worker 展开：Worker 版百度选集的播放 id 是 baiduplay:
+                // 令牌、夸克选集是 qfile: 令牌，/play 经中枢换直链；本地版夸克
+                // 选集是 quark: 令牌，/play 本地换直链；本地版百度选集的播放 id
+                // 仍是分享地址，靠播放器自带百度模块去解）。展开失败时
                 // 回落到原来的“分享N”。
+                // Worker 展开并行化：百度约 12 秒、夸克约 4 秒，串行会拖慢详情；
+                // 先把所有百度/夸克分享的 Worker 展开并行发出，循环里只查表。
+                const workerResults = new Map();
+                if (workerBase) {
+                    const jobs = [];
+                    for (const pv of providers) {
+                        if (pv !== '百度' && pv !== '夸克') continue;
+                        for (const u of byProvider.get(pv)) jobs.push([pv, u]);
+                    }
+                    const outs = await Promise.all(jobs.map(async ([pv, u]) => {
+                        try { return [pv, u, await expandViaWorker(u)]; } catch (e) { return [pv, u, null]; }
+                    }));
+                    for (const [pv, u, files] of outs) if (files && files.length) workerResults.set(pv + '\n' + u, files);
+                }
                 const epGroups = [];
                 for (const pv of providers) {
                     const eps = [];
                     let shareIdx = 0;
                     for (const u of byProvider.get(pv)) {
                         shareIdx++;
-                        let expanded = null;
-                        let fromWorker = false;
-                        if (workerBase && (pv === '百度' || pv === '夸克')) {
-                            expanded = await expandViaWorker(u);
-                            fromWorker = !!(expanded && expanded.length);
-                        }
+                        let expanded = workerResults.get(pv + '\n' + u) || null;
+                        let fromWorker = !!expanded;
                         if (!expanded) {
                             if (pv === '百度') expanded = await expandBaiduShare(u);
                             else if (pv === '夸克') expanded = await expandQuarkShare(u);
@@ -684,6 +699,21 @@ export function createPanSpider(entry) {
             fastify.post('/play', async (request) => {
                 const id = String((request && request.body && request.body.id) || '');
                 if (!id) return { parse: 0, url: '' };
+                // 百度文件（Worker 展开版）：baiduplay: 令牌经中枢 /api/pan/baidu-play
+                // 换直链（直链才配 parse: 0）；失败回落分享地址，不带 parse，走模块。
+                if (id.startsWith('baiduplay:')) {
+                    const rest = id.slice('baiduplay:'.length);
+                    const bar = rest.indexOf('|');
+                    const shareUrl = bar >= 0 ? rest.slice(0, bar) : rest;
+                    const epName = bar >= 0 ? rest.slice(bar + 1) : '';
+                    if (shareUrl && workerBase) {
+                        try {
+                            const r = await fetchJson('GET', workerBase + '/api/pan/baidu-play?url=' + encodeURIComponent(shareUrl) + '&name=' + encodeURIComponent(epName), null, {}, 30000);
+                            if (r && r.ok && r.url) return { parse: 0, url: r.url };
+                        } catch (e) {}
+                    }
+                    return { url: shareUrl };
+                }
                 // 夸克文件（Worker 展开版）：qfile: 令牌经中枢 /api/pan/resolve-file
                 // 换直链（直链才配 parse: 0）；失败回落分享页，不带 parse。
                 if (id.startsWith('qfile:')) {
