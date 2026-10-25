@@ -21,14 +21,18 @@ import req from '../../util/req.js';
  *   HTML 当视频探流，必然报“视频信息获取失败”。现改为：分享地址不再
  *   声明 parse: 0（不带 parse 交给播放器自己的网盘解析层，用用户在
  *   App 网盘设置里登好的凭证去解）；夸克文件能拿到直链时才返回
- *   { parse: 0, url: 直链 }。详情侧：百度分享会尝试展开文件夹（见
- *   expandBaiduShare，verify + sekey 列目录 API，VM 与真机均实测通
- *   过嫁金钗一案），把文件夹里的视频文件列成选集；夸克分享同样尝试
- *   展开（token/detail/download 三段，文档化接口，真机网络为准，
- *   任一步失败都回落到原分享链接，不破坏原有出线）。百度文件级精
- *   准播放（点第 5 集就播第 5 集）仍缺直链：百度直链要 sign，匿名
- *   分享在新版分享页里不暴露 sign，蜘蛛侧拿不到，只能靠播放器自
- *   带百度模块去解分享地址；夸克文件是直链，点哪集播哪集。
+ *   { parse: 0, url: 直链 }。详情侧：百度/夸克分享优先走中枢 Worker
+ *   服务端展开（GET 中枢 /api/pan/expand，见 v12；App 内直接调百度
+ *   verify/locals-data 与夸克 token/detail 在用户手机上全部失败，
+ *   只剩“分享1”，故挪到 Worker 做；Worker 侧百度 36 集、夸克 19 集
+ *   均已实测通）。Worker 失败时回落本地展开（百度 verify + sekey
+ *   列目录、夸克 token/detail/download），再失败回落原分享链接，
+ *   不破坏原有出线。百度文件级精准播放（点第 5 集就播第 5 集）
+ *   仍缺直链：百度直链要 sign，新版分享页里不暴露 sign，蜘蛛侧
+ *   拿不到，只能靠播放器自带百度模块去解分享地址；夸克文件经
+ *   Worker 单文件直链（/api/pan/resolve-file）能拿到直链时点哪集
+ *   播哪集，游客直链有文件大小限制（大文件会失败回落分享地址，
+ *   需夸克登录态才能播大文件）。
  *   无参调用只用于 scripts/check-spiders.mjs 的形态校验，返回一个
  *   不对应任何真实站点的空实例，router 永远不注册它；真实网盘站一律
  *   由 hub.js 的 PAN_SOURCES 传参实例化。
@@ -280,6 +284,34 @@ function getCookie(headers, name) {
     }
 }
 
+// 合并多组响应头的全部 Set-Cookie（后者覆盖同名），丢弃空值，输出 Cookie 头。
+// App 内 axios 的 set-cookie 可能是数组或单串，单串里多个 cookie 按“逗号 +
+// 名=”切分；fetch 兜底无头信息时返回空串（此时本地展开注定失败，走 Worker）。
+function collectAllCookies() {
+    const m = new Map();
+    for (const headers of arguments) {
+        try {
+            const hs = headers || {};
+            for (const k of Object.keys(hs)) {
+                if (k.toLowerCase() !== 'set-cookie') continue;
+                const v = hs[k];
+                const arr = Array.isArray(v) ? v : [String(v)];
+                for (const sc of arr) {
+                    for (const part of String(sc).split(/,(?=[A-Za-z0-9_\-!#$%&'*+.^`|~]+=)/)) {
+                        const s = part.split(';')[0].trim();
+                        if (!s) continue;
+                        const i = s.indexOf('=');
+                        if (i > 0 && s.slice(i + 1).trim() !== '') m.set(s.slice(0, i).trim(), s.slice(i + 1).trim());
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+    const out = [];
+    for (const [k, v] of m) out.push(k + '=' + v);
+    return out.join('; ');
+}
+
 async function fetchJson(method, url, data, headers) {
     const h = headers || {};
     try {
@@ -298,25 +330,70 @@ async function fetchJson(method, url, data, headers) {
 }
 
 // ---- 百度分享文件夹展开 ----
-// 流程（嫁金钗一案 VM 实测）：分享页 302 到 /share/init（yunData 含
+// 流程（嫁金钗一案实测修正）：分享页 302 到 /share/init（init 页含
 // shareid/share_uk）→ POST /share/verify（pwd）得 randsk（= sekey，
-// 同时是 BDCLND）→ 带 BDCLND 再 GET 分享页，locals-data 的 file_list
-// 是根目录 → 子文件夹用 GET /share/list（sekey + 完整 dir 路径）列目录。
-// 注意：dir 必须是完整路径（/sharelink<uk>-<fsid>/文件夹），只传文件夹
-// 名会 errno 2；sign 在新版页里不存在，列目录不用 sign，用 sekey。
-function parseBaiduLocals(text) {
-    try {
-        const m = /<script id="locals-data"[^>]*>\s*(\{[\s\S]*?\})\s*<\/script>/i.exec(String(text || ''));
-        if (!m) return null;
-        const d = JSON.parse(m[1]);
-        if (!d || !Array.isArray(d.file_list)) return null;
-        return d;
-    } catch (e) {
-        return null;
+// 同时是 BDCLND）→ 带首次响应 + verify 响应的全部 Set-Cookie 合并
+// 再 GET 分享页（只发 BDCLND 会被重定向回 init 页，拿不到 file_list）
+// → 根目录 file_list（旧格式在 <script id="locals-data">，新格式在
+// 页面 JSON 的 file_list 数组，需双格式解析；先出现的同名数组是静态
+// 资源清单，元素为字符串，要跳过）→ 子文件夹用 GET /share/list
+// （sekey + 完整 dir 路径）列目录。注意：dir 必须是完整路径
+// （/sharelink<uk>-<fsid>/文件夹），只传文件夹名会 errno 2；新旧
+// 格式页给的路径 uk 段不同（真实 uk 与 0），列目录失败时换一种再试；
+// sign 在新版页里不存在，列目录不用 sign，用 sekey。
+// 从 text[start]（应为 [ 或 {）起按字符串感知的配对扫描抽 JSON，失败返回 null。
+function extractBalanced(text, start, open, close) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let j = start; j < text.length; j++) {
+        const c = text[j];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (c === '\\') esc = true;
+            else if (c === '"') inStr = false;
+            continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === open) depth++;
+        else if (c === close) {
+            depth--;
+            if (depth === 0) {
+                try { return JSON.parse(text.slice(start, j + 1)); } catch (e) { return null; }
+            }
+        }
     }
+    return null;
+}
+// 百度分享页根目录解析（双格式，见上；只返回 file_list，shareid/share_uk
+// 调用方已从 init 页正则拿到，不依赖此处）。
+function parseBaiduLocals(text) {
+    const src = String(text || '');
+    try {
+        const m = /<script id="locals-data"[^>]*>\s*(\{[\s\S]*?\})\s*<\/script>/i.exec(src);
+        if (m) {
+            const d = JSON.parse(m[1]);
+            if (d && Array.isArray(d.file_list)) return d;
+        }
+    } catch (e) {}
+    try {
+        let pos = 0;
+        for (;;) {
+            const k = src.indexOf('"file_list"', pos);
+            if (k < 0) break;
+            const b = src.indexOf('[', k);
+            if (b < 0) break;
+            const arr = extractBalanced(src, b, '[', ']');
+            if (Array.isArray(arr) && arr.length && arr.every((x) => x && typeof x === 'object' && x.server_filename)) {
+                return { file_list: arr };
+            }
+            pos = b + 1;
+        }
+    } catch (e) {}
+    return null;
 }
 
-async function baiduListDir(shareid, shareUk, sekey, cookie, dirPath) {
+async function baiduListDirOnce(shareid, shareUk, sekey, cookie, dirPath) {
     const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
     const q = 'uk=' + encodeURIComponent(shareUk) + '&shareid=' + encodeURIComponent(shareid)
         + '&sekey=' + encodeURIComponent(sekey || '')
@@ -327,6 +404,14 @@ async function baiduListDir(shareid, shareUk, sekey, cookie, dirPath) {
     const r = await fetchJson('GET', 'https://pan.baidu.com/share/list?' + q, null, headers);
     if (!r || Number(r.errno) !== 0 || !Array.isArray(r.list)) return null;
     return r.list;
+}
+// 列目录：先用页面给的完整路径；失败时再试 /sharelink0- 形式。
+async function baiduListDir(shareid, shareUk, sekey, cookie, dirPath) {
+    const r1 = await baiduListDirOnce(shareid, shareUk, sekey, cookie, dirPath);
+    if (r1) return r1;
+    const alt = String(dirPath || '').replace(/^\/sharelink\d+-/, '/sharelink0-');
+    if (alt && alt !== dirPath) return await baiduListDirOnce(shareid, shareUk, sekey, cookie, alt);
+    return null;
 }
 
 // 返回 [{ name, fs_id, path }]（name 已去扩展名、已拼子文件夹前缀），
@@ -362,7 +447,10 @@ async function expandBaiduShare(shareUrl) {
             if (!randsk) randsk = getCookie(vres.headers, 'BDCLND');
             if (!randsk) return null;
             sekey = randsk;
-            cookie = 'BDCLND=' + encodeURIComponent(randsk);
+            // 关键：只发 BDCLND 会被重定向回 init 页拿不到 file_list，必须发
+            // 首次响应 + verify 响应的全部 Set-Cookie 合并（后者覆盖同名）。
+            cookie = collectAllCookies(first.headers, vres.headers);
+            if (!cookie) cookie = 'BDCLND=' + encodeURIComponent(randsk);
             const sp = await fetchRaw('https://pan.baidu.com/s/' + surl, { 'User-Agent': UA, Cookie: cookie });
             locals = parseBaiduLocals(sp.text || '');
             if (!locals) return null;
@@ -469,6 +557,21 @@ export function createPanSpider(entry) {
     const classes = Array.isArray(cfg.classes) ? cfg.classes : [];
     const headers = { 'User-Agent': cfg.ua || UA_DEFAULT, Accept: 'text/html' };
     const maxLinks = Number(cfg.maxLinks) > 0 ? Number(cfg.maxLinks) : 0;
+    // 中枢 Worker 地址（router 注入 hub.js 的 HUB_WORKER_BASE；无参调用时为空，
+    // 此时不走 Worker，只走本地展开）。Worker 展开是 GET，与 /api/config 同
+    // 域名，App 内已验证可达；任一步失败都回落本地展开/原分享。
+    const workerBase = String(cfg.workerBase || '').replace(/\/+$/, '');
+
+    // 中枢服务端展开：GET /api/pan/expand?url=，返回 { ok, provider, files: [{ name, play }] }。
+    // 百度 play 为分享地址（靠播放器自带百度模块解），夸克 play 为 qfile: 令牌（/play 再换直链）。
+    async function expandViaWorker(shareUrl) {
+        if (!workerBase) return null;
+        try {
+            const r = await fetchJson('GET', workerBase + '/api/pan/expand?url=' + encodeURIComponent(shareUrl), null, {});
+            if (r && r.ok && Array.isArray(r.files) && r.files.length) return r.files;
+        } catch (e) {}
+        return null;
+    }
 
     // 探活状态只属于本实例：多个网盘条目各有自己的 hosts，绝不能共用全局。
     let activeHost = '';
@@ -540,9 +643,11 @@ export function createPanSpider(entry) {
                 const providers = [...byProvider.keys()];
                 vod.vod_play_from = providers.join('$$$');
                 // 文件夹展开：百度/夸克分享若能列出文件，就把文件列成选集
-                // （夸克选集的播放 id 是 quark: 令牌，/play 再换直链；百度
-                // 选集的播放 id 仍是分享地址——百度文件直链拿不到，靠播放
-                // 器自带百度模块去解）。展开失败时回落到原来的“分享N”。
+                // （优先中枢 Worker 展开：Worker 版夸克选集的播放 id 是 qfile:
+                // 令牌，/play 经中枢换直链；本地版夸克选集是 quark: 令牌，
+                // /play 本地换直链；百度选集的播放 id 仍是分享地址——百度
+                // 文件直链拿不到，靠播放器自带百度模块去解）。展开失败时
+                // 回落到原来的“分享N”。
                 const epGroups = [];
                 for (const pv of providers) {
                     const eps = [];
@@ -550,12 +655,20 @@ export function createPanSpider(entry) {
                     for (const u of byProvider.get(pv)) {
                         shareIdx++;
                         let expanded = null;
-                        if (pv === '百度') expanded = await expandBaiduShare(u);
-                        else if (pv === '夸克') expanded = await expandQuarkShare(u);
+                        let fromWorker = false;
+                        if (workerBase && (pv === '百度' || pv === '夸克')) {
+                            expanded = await expandViaWorker(u);
+                            fromWorker = !!(expanded && expanded.length);
+                        }
+                        if (!expanded) {
+                            if (pv === '百度') expanded = await expandBaiduShare(u);
+                            else if (pv === '夸克') expanded = await expandQuarkShare(u);
+                        }
                         if (expanded && expanded.length) {
                             for (const f of expanded) {
                                 const nm = sanitizeEpName(f.name);
-                                if (pv === '夸克') eps.push(`${nm}$quark:${f.pwd_id}:${f.passcode}:${f.fid}`);
+                                if (fromWorker) eps.push(`${nm}$${f.play}`);
+                                else if (pv === '夸克') eps.push(`${nm}$quark:${f.pwd_id}:${f.passcode}:${f.fid}`);
                                 else eps.push(`${nm}$${u}`);
                             }
                         } else {
@@ -571,6 +684,21 @@ export function createPanSpider(entry) {
             fastify.post('/play', async (request) => {
                 const id = String((request && request.body && request.body.id) || '');
                 if (!id) return { parse: 0, url: '' };
+                // 夸克文件（Worker 展开版）：qfile: 令牌经中枢 /api/pan/resolve-file
+                // 换直链（直链才配 parse: 0）；失败回落分享页，不带 parse。
+                if (id.startsWith('qfile:')) {
+                    const parts = id.split(':');
+                    const pwd_id = parts[1] || '';
+                    const passcode = parts[2] || '';
+                    const fid = parts[3] || '';
+                    if (pwd_id && fid && workerBase) {
+                        try {
+                            const r = await fetchJson('GET', workerBase + '/api/pan/resolve-file?pwd_id=' + encodeURIComponent(pwd_id) + '&passcode=' + encodeURIComponent(passcode) + '&fid=' + encodeURIComponent(fid), null, {});
+                            if (r && r.ok && r.url) return { parse: 0, url: r.url };
+                        } catch (e) {}
+                    }
+                    return { url: 'https://pan.quark.cn/s/' + pwd_id };
+                }
                 // 夸克文件：现取 token 再换直链（直链才配 parse: 0）。
                 if (id.startsWith('quark:')) {
                     const parts = id.split(':');
