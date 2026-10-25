@@ -74,30 +74,41 @@ import lee_quanju_niuniu from './spider/video/lee_quanju_niuniu.js';
 import lee_duoju_qixing from './spider/video/lee_duoju_qixing.js';
 import lee_duoju_souju from './spider/video/lee_duoju_souju.js';
 import lee_junior_school from './spider/video/lee_junior_school.js';
-import { arrangeSites, arrangeSitesWith, PAN_SOURCES, fetchRemoteConfig, ADULT_KEYS } from './hub.js';
+import { arrangeSites, arrangeSitesWith, PAN_SOURCES, SITE_ORDER, fetchRemoteConfig, ADULT_KEYS } from './hub.js';
 import req from './util/req.js';
 import createPanSpider from './spider/video/pan_hub.js';
 const spiders = [guazi, zhibo, jinpai, juzi, aikanbot, bt_two, duanju_bashi, duanju_daquan, hema_duanju, hongdou_duanju, jisu_zhuiju, rebo_fast, xin6v, duboku, duoduo_tv, hqvod4k, jianpian, kanju_ai, netflixgc, nivod_fast, wencaiyingshi, yueting, xingya_short, ximalaya, yidong_4k, juzi_4k, tiantian_4k, chabeihu, fengye4k, gulu_4k, juxiafan_4k, douban_hot, dongman_bashi, dshixiong_tv, fenzhu, linglingqi, mengtaiqi, zhuijudaren, xiaoyouzi, duse91, duoju_local_node, netflix_cat, tencent_video, zhenpin_video, guazi_2k, youtube_video, hub_center, lee_iqiyi, lee_mgtv, lee_sp360, lee_4kmp, lee_4k_yingshi, lee_juzi4k, lee_hetun4k, lee_duoju_wusheng, lee_zhenguo_xingguo, lee_quanju_xingxing, lee_quanju_weiguan, lee_duoju_kuwo, lee_duoju_damang, lee_duoju_haokan, lee_quanju_haokan, lee_quanju_baidu, lee_quanju_xingya, lee_zhenguo_yaguo, lee_quanju_hema, lee_quanju_xifan, lee_zhenguo_fanguo, lee_quanju_qimao, lee_quanju_shanhai, lee_quanju_yimi, lee_quanju_xifu, lee_quanju_niuniu, lee_duoju_qixing, lee_duoju_souju, lee_junior_school];
 // 网盘条目由中枢 PAN_SOURCES 驱动、通用蜘蛛承接；与视频源分开注册，
 // 但下发时同样过中枢（排序/开关）。PAN_SOURCES 为空时这里就是空数组。
 // 注意：panSpiders 不再是模块级常量，见 router() 内的异步初始化：
-// 启动时先读一次远端配置，远端 pan 覆盖同 key 内置条目并追加新增条目后
-// 再生成；远端读取失败时只用内置 PAN_SOURCES。
+// 启动时先读一次远端配置，按 mergePanSources 自适应合并（远端 pan 齐全
+// 时远端为准，不齐全时内置为准、远端只追加新增 key）后生成；远端读取
+// 失败时只用内置 PAN_SOURCES。
 const spiderPrefix = '/spider'; // API 路由前缀
 
 /**
- * 合并内置网盘表与远端网盘表：同 key 以远端条目覆盖（只有名时只改名，
- * 其余字段保留内置值；全量条目则整体覆盖），远端新增 key 追加在末尾。
- * remotePan 为 null/undefined 时原样返回内置表。
+ * 合并内置网盘表与远端网盘表（自适应，见 /config 同款规则）。
+ * 远端 pan 齐全（含全部内置 key）时沿用旧规则：同 key 以远端条目覆盖
+ * （只有名时只改名，其余字段保留内置值；全量条目则整体覆盖），远端
+ * 新增 key 追加在末尾——此时中枢网盘页的改名/改 hosts 正常生效。
+ * 远端 pan 缺内置 key（陈旧、未同步新源）时视为未同步：内置表为准，
+ * 远端同 key 条目忽略（不覆盖名与 hosts），远端新增 key 仍追加——
+ * 避免陈旧中枢漏掉新源、沿用旧名旧 hosts。remotePan 为 null/undefined
+ * 时原样返回内置表。
  */
 function mergePanSources(builtin, remotePan) {
     if (!remotePan) return builtin;
     const out = builtin.map((entry) => Object.assign({}, entry));
     const indexByKey = new Map(out.map((entry, i) => [entry.key, i]));
+    const remoteKeys = new Set(remotePan.filter((e) => e && typeof e.key === 'string').map((e) => e.key));
+    const complete = builtin.every((entry) => remoteKeys.has(entry.key));
     for (const entry of remotePan) {
         if (!entry || typeof entry.key !== 'string') continue;
         if (indexByKey.has(entry.key)) {
-            out[indexByKey.get(entry.key)] = Object.assign({}, out[indexByKey.get(entry.key)], entry);
+            if (complete) {
+                out[indexByKey.get(entry.key)] = Object.assign({}, out[indexByKey.get(entry.key)], entry);
+            }
+            // 不齐全时内置为准，远端同 key 条目忽略
         } else {
             out.push(Object.assign({}, entry));
             indexByKey.set(entry.key, out.length - 1);
@@ -114,7 +125,8 @@ function mergePanSources(builtin, remotePan) {
  */
 export default async function router(fastify) {
     // 网盘蜘蛛异步初始化：启动时先读一次远端配置（失败回 null，只用内置表），
-    // 远端 pan 覆盖同 key 内置条目并追加新增条目后生成 panSpiders。
+    // 按 mergePanSources 自适应合并后生成 panSpiders（远端 pan 齐全时远端
+    // 为准，不齐全时内置为准、远端只追加新增 key）。
     // 远端在启动后新增的 key 因本次未注册路由，/config 本次不下发，重启后生效。
     const startupRemote = await fetchRemoteConfig(req);
     const panSpiders = mergePanSources(PAN_SOURCES, startupRemote && startupRemote.pan ? startupRemote.pan : null)
@@ -198,29 +210,51 @@ export default async function router(fastify) {
                     });
                     const allMetas = spiderMetas.concat(panMetas);
                     // /config 每次请求都读一次远端配置：成功时远端 order/disabled
-                    // 覆盖内置表，hideAdult=true 时把成人源 key 并入 disabled；
-                    // 远端 pan 只管 PAN_SOURCES 驱动的通用网盘条目：远端有且本站
-                    // 已注册路由的 key 才下发（远端新增 key 本次未注册路由，不下发），
-                    // 远端省略的内置网盘 key 本次不下发（= 删除生效），同 key 条目
-                    // 改名时下发名取远端名。原盘、闪电两个独立网盘蜘蛛不受 pan 表
-                    // 过滤（只受 order/disabled 管），避免 Worker 种子漏列导致独立
-                    // 源消失——Worker 的 pan 种子只需列 5 条 PAN_SOURCES。
+                    // 覆盖内置表，hideAdult=true 时把成人源 key 并入 disabled。
+                    // 网盘条目自适应规则（与启动合并一致）：远端 pan 齐全（含全部
+                    // 内置网盘 key）时沿用旧规则——远端有且本站已注册路由的 key 才
+                    // 下发，远端条目名覆盖下发名，中枢网盘页改动生效；远端 pan 缺
+                    // 内置 key（陈旧）或无 pan 字段时，包内为准——不过滤、不取远端
+                    // 名（下发名强制还原内置名），顺序按包内 SITE_ORDER 网盘块
+                    // （瓜子-2K 与 YouTube 之间）插回远端 order，避免陈旧中枢漏新源、
+                    // 沿用旧名旧 hosts、把新源挤到末尾。原盘、闪电两个独立网盘蜘蛛
+                    // 不受 pan 表影响（只受 order/disabled 管）。
                     // 远端读取失败时行为与原来完全一致（内置表）：网盘部分只取
                     // PAN_SOURCES 的 key 并还原内置名，启动期远端新增的 key 不下发
                     // （启动合并写进 panSpiders 的远端名不能漏到回落结果里）。
                     const remote = await fetchRemoteConfig(req);
                     let arranged;
                     let remotePanByKey = null;
+                    let panBuiltinWins = false;
+                    const builtinPanNames = new Map(PAN_SOURCES.map((entry) => [entry.key, entry.name]));
                     if (remote) {
                         const disabled = new Set(remote.disabled);
                         if (remote.hideAdult) {
                             for (const k of ADULT_KEYS) disabled.add(k);
                         }
-                        arranged = arrangeSitesWith(remote.order, disabled, allMetas);
+                        let effectiveOrder = remote.order;
                         if (remote.pan) {
                             remotePanByKey = new Map(remote.pan.map((entry) => [entry.key, entry]));
-                            // 只过滤通用网盘条目（panSpiders 出身）；独立蜘蛛（原盘、
-                            // 闪电）不在 panSpiderKeys 里，永远不受 pan 表过滤。
+                            panBuiltinWins = !PAN_SOURCES.every((entry) => remotePanByKey.has(entry.key));
+                        } else {
+                            panBuiltinWins = true;
+                        }
+                        if (panBuiltinWins) {
+                            // 包内为准：远端 order 里剔掉全部内置网盘 key，再把包内
+                            // 网盘 key 按 SITE_ORDER 顺序插回网盘块位置。
+                            const builtinPanKeySet = new Set(PAN_SOURCES.map((entry) => entry.key));
+                            const builtinPanKeys = SITE_ORDER.filter((k) => builtinPanKeySet.has(k));
+                            effectiveOrder = (remote.order || []).filter((k) => !builtinPanKeySet.has(k));
+                            const ytIdx = effectiveOrder.indexOf('py_youtube_video');
+                            const gzIdx = effectiveOrder.indexOf('py_guazi_2k');
+                            if (ytIdx >= 0) effectiveOrder.splice(ytIdx, 0, ...builtinPanKeys);
+                            else if (gzIdx >= 0) effectiveOrder.splice(gzIdx + 1, 0, ...builtinPanKeys);
+                            else effectiveOrder.push(...builtinPanKeys);
+                        }
+                        arranged = arrangeSitesWith(effectiveOrder, disabled, allMetas);
+                        if (remote.pan && !panBuiltinWins) {
+                            // 远端齐全时沿用旧规则：只过滤通用网盘条目；独立蜘蛛
+                            // （原盘、闪电）不在 panSpiderKeys 里，永远不受 pan 表过滤。
                             const panSpiderKeys = new Set(panMetas.map((meta) => meta.key));
                             arranged = arranged.filter((meta) => {
                                 if (panSpiderKeys.has(meta.key)) return remotePanByKey.has(meta.key);
@@ -232,7 +266,6 @@ export default async function router(fastify) {
                         // 的 key 并还原内置名（启动期远端合并写进 panMetas 的改名与
                         // 新增 key 在此全部排除，HUB_WORKER_BASE 为空时本分支与旧
                         // 行为逐项一致）。
-                        const builtinPanNames = new Map(PAN_SOURCES.map((entry) => [entry.key, entry.name]));
                         const builtinPanMetas = panMetas
                             .filter((meta) => builtinPanNames.has(meta.key))
                             .map((meta) => Object.assign({}, meta, { name: builtinPanNames.get(meta.key) }));
@@ -240,7 +273,11 @@ export default async function router(fastify) {
                     }
                     arranged.forEach((meta) => {
                         const out = Object.assign({}, meta);
-                        if (remotePanByKey && remotePanByKey.has(meta.key) && remotePanByKey.get(meta.key).name) {
+                        if (panBuiltinWins && builtinPanNames.has(meta.key)) {
+                            // 包内为准时下发名强制还原内置名（启动合并写进 panMetas 的
+                            // 远端名、中枢 pan 表的旧名都不能漏到结果里）
+                            out.name = builtinPanNames.get(meta.key);
+                        } else if (remotePanByKey && remotePanByKey.has(meta.key) && remotePanByKey.get(meta.key).name) {
                             out.name = remotePanByKey.get(meta.key).name;
                         }
                         // 远端改名（中枢管理页 ✎ 改的名）覆盖下发名，视频源与网盘源都适用

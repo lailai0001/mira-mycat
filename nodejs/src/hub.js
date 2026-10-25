@@ -64,8 +64,10 @@ export const ADULT_KEYS = ['py_duoju_local_node'];
 /**
  * 读远端 Worker 配置（GET HUB_WORKER_BASE + '/api/config'）。
  * 成功返回归一化对象 { order, disabled, pan, hideAdult, names }，其中 pan 为 null
- * 表示远端未给 pan 字段（不覆盖网盘），pan 为数组时表示全量网盘表
- * （远端省略的内置网盘 key 即删除、远端条目名覆盖下发名）；names 为源显示名
+ * 表示远端未给 pan 字段；pan 为数组时原样返回远端网盘表，消费方（router.js
+ * 的 mergePanSources 与 /config）按齐全与否自适应：齐全（含全部内置网盘 key）
+ * 时远端为准（远端省略的内置网盘 key 即删除、远端条目名覆盖下发名），缺内置
+ * key 时视为陈旧、网盘以包内 PAN_SOURCES 为准；names 为源显示名
  * 覆盖表（key → 自定义名，空对象表示无改名），形状不对时只忽略它。
  * 任一步失败（未部署、网络错、超时、坏 JSON、形状不对）都回 null，绝不抛错，
  * 调用方回落内置表。
