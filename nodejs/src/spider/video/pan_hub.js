@@ -659,6 +659,10 @@ export function createPanSpider(entry) {
                     }
                     byProvider.set(pv, uniq);
                 }
+                // 网盘优先级按参考源默认顺序：夸克、UC、百度、115、阿里；
+                // 详情里厂商线路按这个顺序排，未在表里的厂商排最后。
+                const PAN_PRI = { quark: 0, uc: 1, baidu: 2, '115': 3, ali: 4 };
+                providers.sort((a, b) => (PAN_PRI[a] !== undefined ? PAN_PRI[a] : 99) - (PAN_PRI[b] !== undefined ? PAN_PRI[b] : 99));
                 vod.vod_play_from = providers.join('$$$');
                 // 文件夹展开：百度/夸克分享若能列出文件，就把文件列成选集
                 // （优先中枢 Worker 展开：Worker 版百度选集的播放 id 是 baiduplay:
