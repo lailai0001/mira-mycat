@@ -49,3 +49,9 @@ jobs:
           git add dist/
           git diff --staged --quiet || git commit -m "build: update dist bundle [skip ci]"
           git push
+
+      - name: Sync pan sources to hub
+        working-directory: ./nodejs
+        env:
+          HUB_SYNC_TOKEN: ${{ secrets.HUB_SYNC_TOKEN }}
+        run: node scripts/sync-hub-pan.mjs
